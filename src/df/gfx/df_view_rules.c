@@ -23,7 +23,7 @@ DF_CORE_VIEW_RULE_EVAL_RESOLUTION_FUNCTION_DEF(array)
           str8_list_push(scratch.arena, &array_size_expr_strs, child->string);
         }
         String8 array_size_expr = str8_list_join(scratch.arena, &array_size_expr_strs, 0);
-        DF_Eval array_size_eval = df_eval_from_string(arena, dbgi_scope, ctrl_ctx, parse_ctx, macro_map, array_size_expr);
+        DF_Eval array_size_eval = df_eval_from_string(arena, di_scope, ctrl_ctx, parse_ctx, macro_map, array_size_expr);
         DF_Eval array_size_eval_value = df_value_mode_eval_from_eval(parse_ctx->type_graph, parse_ctx->rdi, ctrl_ctx, array_size_eval);
         eval_error_list_concat_in_place(&eval.errors, &array_size_eval.errors);
         array_size = array_size_eval_value.imm_u64;
@@ -36,6 +36,14 @@ DF_CORE_VIEW_RULE_EVAL_RESOLUTION_FUNCTION_DEF(array)
     }
   }
   scratch_end(scratch);
+  return eval;
+}
+
+////////////////////////////////
+//~ rjf: "slice"
+
+DF_CORE_VIEW_RULE_EVAL_RESOLUTION_FUNCTION_DEF(slice)
+{
   return eval;
 }
 
@@ -340,13 +348,13 @@ DF_GFX_VIEW_RULE_ROW_UI_FUNCTION_DEF(rgba)
     text_box = ui_build_box_from_key(UI_BoxFlag_DrawText, ui_key_zero());
     D_FancyStringList fancy_strings = {0};
     {
-      D_FancyString open_paren = {ui_top_font(), str8_lit("("), ui_top_text_color(), ui_top_font_size(), 0, 0};
-      D_FancyString comma = {ui_top_font(), str8_lit(", "), ui_top_text_color(), ui_top_font_size(), 0, 0};
+      D_FancyString open_paren = {ui_top_font(), str8_lit("("), ui_top_palette()->text, ui_top_font_size(), 0, 0};
+      D_FancyString comma = {ui_top_font(), str8_lit(", "), ui_top_palette()->text, ui_top_font_size(), 0, 0};
       D_FancyString r_fstr = {ui_top_font(), push_str8f(scratch.arena, "%.2f", rgba.x), v4f32(1.f, 0.25f, 0.25f, 1.f), ui_top_font_size(), 4.f, 0};
       D_FancyString g_fstr = {ui_top_font(), push_str8f(scratch.arena, "%.2f", rgba.y), v4f32(0.25f, 1.f, 0.25f, 1.f), ui_top_font_size(), 4.f, 0};
       D_FancyString b_fstr = {ui_top_font(), push_str8f(scratch.arena, "%.2f", rgba.z), v4f32(0.25f, 0.25f, 1.f, 1.f), ui_top_font_size(), 4.f, 0};
       D_FancyString a_fstr = {ui_top_font(), push_str8f(scratch.arena, "%.2f", rgba.w), v4f32(1.f,   1.f,   1.f, 1.f), ui_top_font_size(), 4.f, 0};
-      D_FancyString clse_paren = {ui_top_font(), str8_lit(")"), ui_top_text_color(), ui_top_font_size(), 0, 0};
+      D_FancyString clse_paren = {ui_top_font(), str8_lit(")"), ui_top_palette()->text, ui_top_font_size(), 0, 0};
       d_fancy_string_list_push(scratch.arena, &fancy_strings, &open_paren);
       d_fancy_string_list_push(scratch.arena, &fancy_strings, &r_fstr);
       d_fancy_string_list_push(scratch.arena, &fancy_strings, &comma);
@@ -367,7 +375,7 @@ DF_GFX_VIEW_RULE_ROW_UI_FUNCTION_DEF(rgba)
     color_box = ui_build_box_from_stringf(UI_BoxFlag_Clickable, "color_box");
     UI_Parent(color_box) UI_PrefHeight(ui_em(1.875f, 1.f)) UI_Padding(ui_pct(1, 0))
     {
-      UI_BackgroundColor(rgba) UI_CornerRadius(ui_top_font_size()*0.5f)
+      UI_Palette(ui_build_palette(ui_top_palette(), .background = rgba)) UI_CornerRadius(ui_top_font_size()*0.5f)
         ui_build_box_from_key(UI_BoxFlag_DrawBackground|UI_BoxFlag_DrawBorder, ui_key_zero());
     }
   }
@@ -425,7 +433,7 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(rgba)
       UI_Signal h_sig  = ui_hue_pickerf(&hsva.x, hsva.y, hsva.z, "hue_picker");
       commit = commit || ui_released(h_sig);
     }
-    UI_PrefWidth(ui_children_sum(1)) UI_Column UI_PrefWidth(ui_text_dim(10, 1)) UI_Font(df_font_from_slot(DF_FontSlot_Code)) UI_TextColor(df_rgba_from_theme_color(DF_ThemeColor_WeakText))
+    UI_PrefWidth(ui_children_sum(1)) UI_Column UI_PrefWidth(ui_text_dim(10, 1)) UI_Font(df_font_from_slot(DF_FontSlot_Code)) UI_FlagsAdd(UI_BoxFlag_DrawTextWeak)
     {
       ui_labelf("Hex");
       ui_labelf("R");
@@ -468,7 +476,7 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(rgba)
 //~ rjf: "text"
 
 internal DF_TxtTopologyInfo
-df_vr_txt_topology_info_from_cfg(DBGI_Scope *scope, DF_CtrlCtx *ctrl_ctx, EVAL_ParseCtx *parse_ctx, EVAL_String2ExprMap *macro_map, DF_CfgNode *cfg)
+df_vr_txt_topology_info_from_cfg(DI_Scope *scope, DF_CtrlCtx *ctrl_ctx, EVAL_ParseCtx *parse_ctx, EVAL_String2ExprMap *macro_map, DF_CfgNode *cfg)
 {
   Temp scratch = scratch_begin(0, 0);
   DF_TxtTopologyInfo result = zero_struct;
@@ -526,7 +534,7 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(text)
   //
   DF_Entity *thread = df_entity_from_handle(ctrl_ctx->thread);
   DF_Entity *process = df_entity_ancestor_from_kind(thread, DF_EntityKind_Process);
-  DF_TxtTopologyInfo top = df_vr_txt_topology_info_from_cfg(dbgi_scope, ctrl_ctx, parse_ctx, macro_map, cfg);
+  DF_TxtTopologyInfo top = df_vr_txt_topology_info_from_cfg(di_scope, ctrl_ctx, parse_ctx, macro_map, cfg);
   DF_Eval value_eval = df_value_mode_eval_from_eval(parse_ctx->type_graph, parse_ctx->rdi, ctrl_ctx, eval);
   U64 base_vaddr = value_eval.imm_u64 ? value_eval.imm_u64 : value_eval.offset;
   Rng1U64 vaddr_range = r1u64(base_vaddr, base_vaddr + (top.size_cap ? top.size_cap : 2048));
@@ -537,9 +545,10 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(text)
   String8 data = {0};
   TXT_TextInfo info = {0};
   TXT_LineTokensSlice line_tokens_slice = {0};
+  U128 text_key = {0};
   {
     U128 text_hash = {0};
-    U128 text_key = ctrl_hash_store_key_from_process_vaddr_range(process->ctrl_machine_id, process->ctrl_handle, vaddr_range, 1);
+    text_key = ctrl_hash_store_key_from_process_vaddr_range(process->ctrl_machine_id, process->ctrl_handle, vaddr_range, 1);
     info = txt_text_info_from_key_lang(txt_scope, text_key, top.lang, &text_hash);
     data = hs_data_from_hash(hs_scope, text_hash);
     line_tokens_slice = txt_line_tokens_slice_from_info_data_line_range(scratch.arena, &info, data, r1s64(1, info.lines_count));
@@ -558,8 +567,8 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(text)
     code_slice_params.line_bps = push_array(scratch.arena, DF_EntityList, info.lines_count);
     code_slice_params.line_ips = push_array(scratch.arena, DF_EntityList, info.lines_count);
     code_slice_params.line_pins = push_array(scratch.arena, DF_EntityList, info.lines_count);
-    code_slice_params.line_dasm2src = push_array(scratch.arena, DF_TextLineDasm2SrcInfoList, info.lines_count);
-    code_slice_params.line_src2dasm = push_array(scratch.arena, DF_TextLineSrc2DasmInfoList, info.lines_count);
+    code_slice_params.line_vaddrs = push_array(scratch.arena, U64, info.lines_count);
+    code_slice_params.line_infos = push_array(scratch.arena, DF_LineList, info.lines_count);
     for(U64 line_idx = 0; line_idx < info.lines_count; line_idx += 1)
     {
       code_slice_params.line_text[line_idx] = str8_substr(data, info.lines_ranges[line_idx]);
@@ -568,8 +577,10 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(text)
     }
     code_slice_params.font = df_font_from_slot(DF_FontSlot_Code);
     code_slice_params.font_size = ui_top_font_size();
+    code_slice_params.tab_size = f_column_size_from_tag_size(code_slice_params.font, code_slice_params.font_size)*df_setting_val_from_code(ws, DF_SettingCode_TabWidth).s32;
     code_slice_params.line_height_px = ui_top_font_size()*1.5f;
-    code_slice_params.margin_width_px = 0;
+    code_slice_params.priority_margin_width_px = 0;
+    code_slice_params.catchall_margin_width_px = 0;
     code_slice_params.line_num_width_px = ui_top_font_size()*5.f;
     code_slice_params.line_text_max_width_px = ui_top_font_size()*2.f*info.lines_max_size;
   }
@@ -609,7 +620,7 @@ DF_VIEW_UI_FUNCTION_DEF(text)
 //~ rjf: "disasm"
 
 internal DF_DisasmTopologyInfo
-df_vr_disasm_topology_info_from_cfg(DBGI_Scope *scope, DF_CtrlCtx *ctrl_ctx, EVAL_ParseCtx *parse_ctx, EVAL_String2ExprMap *macro_map, DF_CfgNode *cfg)
+df_vr_disasm_topology_info_from_cfg(DI_Scope *scope, DF_CtrlCtx *ctrl_ctx, EVAL_ParseCtx *parse_ctx, EVAL_String2ExprMap *macro_map, DF_CfgNode *cfg)
 {
   Temp scratch = scratch_begin(0, 0);
   DF_DisasmTopologyInfo result = zero_struct;
@@ -668,7 +679,7 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(disasm)
   state->last_open_frame_idx = df_frame_index();
   {
     //- rjf: unpack params
-    DF_DisasmTopologyInfo top = df_vr_disasm_topology_info_from_cfg(dbgi_scope, ctrl_ctx, parse_ctx, macro_map, cfg);
+    DF_DisasmTopologyInfo top = df_vr_disasm_topology_info_from_cfg(di_scope, ctrl_ctx, parse_ctx, macro_map, cfg);
     
     //- rjf: resolve to address value & range
     DF_Eval value_eval = df_value_mode_eval_from_eval(parse_ctx->type_graph, parse_ctx->rdi, ctrl_ctx, eval);
@@ -684,14 +695,23 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(disasm)
     
     //- rjf: key -> parsed text info
     U128 data_hash = {0};
-    DASM_Info dasm_info = dasm_info_from_key_addr_arch_style(dasm_scope, dasm_key, vaddr_range.min, top.arch, 0, DASM_Syntax_Intel, &data_hash);
+    DASM_Params dasm_params = {0};
+    {
+      dasm_params.vaddr = vaddr_range.min;
+      dasm_params.arch = top.arch;
+      dasm_params.style_flags = DASM_StyleFlag_Addresses;
+      dasm_params.syntax = DASM_Syntax_Intel;
+      dasm_params.base_vaddr = 0;
+    }
+    DASM_Info dasm_info = dasm_info_from_key_params(dasm_scope, dasm_key, &dasm_params, &data_hash);
     String8 dasm_text_data = {0};
     TXT_TextInfo dasm_text_info = {0};
+    TXT_LangKind lang_kind = TXT_LangKind_DisasmX64Intel;
     for(U64 rewind_idx = 0; rewind_idx < 2; rewind_idx += 1)
     {
       U128 dasm_text_hash = hs_hash_from_key(dasm_info.text_key, rewind_idx);
       dasm_text_data = hs_data_from_hash(hs_scope, dasm_text_hash);
-      dasm_text_info = txt_text_info_from_hash_lang(txt_scope, dasm_text_hash, TXT_LangKind_DisasmX64Intel);
+      dasm_text_info = txt_text_info_from_hash_lang(txt_scope, dasm_text_hash, lang_kind);
       if(dasm_text_info.lines_count != 0)
       {
         break;
@@ -710,8 +730,8 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(disasm)
       code_slice_params.line_bps = push_array(scratch.arena, DF_EntityList, dasm_text_info.lines_count);
       code_slice_params.line_ips = push_array(scratch.arena, DF_EntityList, dasm_text_info.lines_count);
       code_slice_params.line_pins = push_array(scratch.arena, DF_EntityList, dasm_text_info.lines_count);
-      code_slice_params.line_dasm2src = push_array(scratch.arena, DF_TextLineDasm2SrcInfoList, dasm_text_info.lines_count);
-      code_slice_params.line_src2dasm = push_array(scratch.arena, DF_TextLineSrc2DasmInfoList, dasm_text_info.lines_count);
+      code_slice_params.line_vaddrs = push_array(scratch.arena, U64, dasm_text_info.lines_count);
+      code_slice_params.line_infos = push_array(scratch.arena, DF_LineList, dasm_text_info.lines_count);
       for(U64 line_idx = 0; line_idx < dasm_text_info.lines_count; line_idx += 1)
       {
         code_slice_params.line_text[line_idx] = str8_substr(dasm_text_data, dasm_info.insts.v[line_idx].text_range);
@@ -720,8 +740,10 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(disasm)
       }
       code_slice_params.font = df_font_from_slot(DF_FontSlot_Code);
       code_slice_params.font_size = ui_top_font_size();
+      code_slice_params.tab_size = f_column_size_from_tag_size(code_slice_params.font, code_slice_params.font_size)*df_setting_val_from_code(ws, DF_SettingCode_TabWidth).s32;
       code_slice_params.line_height_px = ui_top_font_size()*1.5f;
-      code_slice_params.margin_width_px = 0;
+      code_slice_params.priority_margin_width_px = 0;
+      code_slice_params.catchall_margin_width_px = 0;
       code_slice_params.line_num_width_px = ui_top_font_size()*5.f;
       code_slice_params.line_text_max_width_px = ui_top_font_size()*2.f*dasm_text_info.lines_max_size;
     }
@@ -811,7 +833,7 @@ df_bitmap_view_state__canvas_from_screen_rect(DF_BitmapViewState *bvs, Rng2F32 r
 }
 
 internal DF_BitmapTopologyInfo
-df_vr_bitmap_topology_info_from_cfg(DBGI_Scope *scope, DF_CtrlCtx *ctrl_ctx, EVAL_ParseCtx *parse_ctx, EVAL_String2ExprMap *macro_map, DF_CfgNode *cfg)
+df_vr_bitmap_topology_info_from_cfg(DI_Scope *scope, DF_CtrlCtx *ctrl_ctx, EVAL_ParseCtx *parse_ctx, EVAL_String2ExprMap *macro_map, DF_CfgNode *cfg)
 {
   Temp scratch = scratch_begin(0, 0);
   DF_BitmapTopologyInfo info = {0};
@@ -860,7 +882,7 @@ df_vr_bitmap_topology_info_from_cfg(DBGI_Scope *scope, DF_CtrlCtx *ctrl_ctx, EVA
 internal UI_BOX_CUSTOM_DRAW(df_vr_bitmap_box_draw)
 {
   DF_VR_BitmapBoxDrawData *draw_data = (DF_VR_BitmapBoxDrawData *)user_data;
-  Vec4F32 bg_color = box->background_color;
+  Vec4F32 bg_color = box->palette->background;
   d_img(box->rect, draw_data->src, draw_data->texture, v4f32(1, 1, 1, 1), 0, 0, 0);
   if(draw_data->loaded_t < 0.98f)
   {
@@ -881,8 +903,7 @@ internal UI_BOX_CUSTOM_DRAW(df_vr_bitmap_box_draw)
   d_rect(box->rect, v4f32(bg_color.x*bg_color.w, bg_color.y*bg_color.w, bg_color.z*bg_color.w, 1.f-draw_data->loaded_t), 0, 0, 0);
   if(draw_data->hovered)
   {
-    Vec4F32 indicator_color = df_rgba_from_theme_color(DF_ThemeColor_PlainBorder);
-    indicator_color.w = 1.f;
+    Vec4F32 indicator_color = v4f32(1, 1, 1, 1);
     d_rect(pad_2f32(r2f32p(box->rect.x0 + draw_data->mouse_px.x*draw_data->ui_per_bmp_px,
                            box->rect.y0 + draw_data->mouse_px.y*draw_data->ui_per_bmp_px,
                            box->rect.x0 + draw_data->mouse_px.x*draw_data->ui_per_bmp_px + draw_data->ui_per_bmp_px,
@@ -909,7 +930,7 @@ DF_GFX_VIEW_RULE_ROW_UI_FUNCTION_DEF(bitmap)
   U64 base_vaddr = value_eval.imm_u64 ? value_eval.imm_u64 : value_eval.offset;
   DF_BitmapTopologyInfo topology = df_vr_bitmap_topology_info_from_cfg(scope, ctrl_ctx, parse_ctx, macro_map, cfg);
   U64 expected_size = topology.width*topology.height*r_tex2d_format_bytes_per_pixel_table[topology.fmt];
-  UI_Font(df_font_from_slot(DF_FontSlot_Code)) UI_TextColor(df_rgba_from_theme_color(DF_ThemeColor_WeakText))
+  UI_Font(df_font_from_slot(DF_FontSlot_Code)) UI_FlagsAdd(UI_BoxFlag_DrawTextWeak)
     ui_labelf("0x%I64x -> Bitmap (%I64u x %I64u)", base_vaddr, topology.width, topology.height);
 }
 
@@ -936,7 +957,7 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(bitmap)
   //
   DF_Eval value_eval = df_value_mode_eval_from_eval(parse_ctx->type_graph, parse_ctx->rdi, ctrl_ctx, eval);
   U64 base_vaddr = value_eval.imm_u64 ? value_eval.imm_u64 : value_eval.offset;
-  DF_BitmapTopologyInfo topology_info = df_vr_bitmap_topology_info_from_cfg(dbgi_scope, ctrl_ctx, parse_ctx, macro_map, cfg);
+  DF_BitmapTopologyInfo topology_info = df_vr_bitmap_topology_info_from_cfg(di_scope, ctrl_ctx, parse_ctx, macro_map, cfg);
   U64 expected_size = topology_info.width*topology_info.height*r_tex2d_format_bytes_per_pixel_table[topology_info.fmt];
   Rng1U64 vaddr_range = r1u64(base_vaddr, base_vaddr+expected_size);
   
@@ -945,7 +966,7 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(bitmap)
   //
   U128 texture_key = ctrl_hash_store_key_from_process_vaddr_range(process->ctrl_machine_id, process->ctrl_handle, vaddr_range, 0);
   TEX_Topology topology = tex_topology_make(v2s32((S32)topology_info.width, (S32)topology_info.height), topology_info.fmt);
-  R_Handle texture = tex_texture_from_key_topology(tex_scope, texture_key, topology);
+  R_Handle texture = tex_texture_from_key_topology(tex_scope, texture_key, topology, 0);
   
   //////////////////////////////
   //- rjf: animate
@@ -979,7 +1000,7 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(bitmap)
       UI_Column UI_Padding(ui_pct(1.f, 0.f))
       UI_PrefHeight(ui_px(img_dim, 1.f))
     {
-      ui_image(texture, r2f32(v2f32(0, 0), v2f32((F32)topology_info.width, (F32)topology_info.height)), v4f32(1, 1, 1, state->loaded_t), 10.f*(1-state->loaded_t), str8_lit("image_box"));
+      ui_image(texture, R_Tex2DSampleKind_Nearest, r2f32(v2f32(0, 0), v2f32((F32)topology_info.width, (F32)topology_info.height)), v4f32(1, 1, 1, state->loaded_t), 10.f*(1-state->loaded_t), str8_lit("image_box"));
     }
   }
   
@@ -991,7 +1012,7 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(bitmap)
 DF_VIEW_SETUP_FUNCTION_DEF(bitmap)
 {
   DF_BitmapViewState *bvs = df_view_user_state(view, DF_BitmapViewState);
-  DBGI_Scope *dbgi_scope = dbgi_scope_open();
+  DI_Scope *di_scope = di_scope_open();
   DF_CfgNode *view_center_cfg = df_cfg_node_child_from_string(cfg_root, str8_lit("view_center"), StringMatchFlag_CaseInsensitive);
   DF_CfgNode *zoom_cfg = df_cfg_node_child_from_string(cfg_root, str8_lit("zoom"), StringMatchFlag_CaseInsensitive);
   DF_CfgNode *bitmap_cfg = df_cfg_node_child_from_string(cfg_root, str8_lit("bitmap"), StringMatchFlag_CaseInsensitive);
@@ -999,16 +1020,16 @@ DF_VIEW_SETUP_FUNCTION_DEF(bitmap)
   DF_Entity *thread = df_entity_from_handle(ctrl_ctx.thread);
   DF_Entity *process = df_entity_ancestor_from_kind(thread, DF_EntityKind_Process);
   U64 thread_unwind_rip_vaddr = df_query_cached_rip_from_thread_unwind(thread, ctrl_ctx.unwind_count);
-  EVAL_ParseCtx parse_ctx = df_eval_parse_ctx_from_process_vaddr(dbgi_scope, process, thread_unwind_rip_vaddr);
+  EVAL_ParseCtx parse_ctx = df_eval_parse_ctx_from_process_vaddr(di_scope, process, thread_unwind_rip_vaddr);
   bvs->view_center_pos.x = (F32)f64_from_str8(bitmap_cfg->first->string);
   bvs->view_center_pos.y = (F32)f64_from_str8(bitmap_cfg->first->next->string);
   bvs->zoom = (F32)f64_from_str8(zoom_cfg->first->string);
-  bvs->top = df_vr_bitmap_topology_info_from_cfg(dbgi_scope, &ctrl_ctx, &parse_ctx, &eval_string2expr_map_nil, bitmap_cfg);
+  bvs->top = df_vr_bitmap_topology_info_from_cfg(di_scope, &ctrl_ctx, &parse_ctx, &eval_string2expr_map_nil, bitmap_cfg);
   if(bvs->zoom == 0)
   {
     bvs->zoom = 1.f;
   }
-  dbgi_scope_close(dbgi_scope);
+  di_scope_close(di_scope);
 }
 
 DF_VIEW_STRING_FROM_STATE_FUNCTION_DEF(bitmap)
@@ -1035,7 +1056,7 @@ internal UI_BOX_CUSTOM_DRAW(df_bitmap_view_canvas_box_draw)
   Rng2F32 rect_cvs = df_bitmap_view_state__canvas_from_screen_rect(bvs, rect_scrn, rect_scrn);
   F32 grid_cell_size_cvs = box->font_size*10.f;
   F32 grid_line_thickness_px = Max(2.f, box->font_size*0.1f);
-  Vec4F32 grid_line_color = df_rgba_from_theme_color(DF_ThemeColor_WeakText);
+  Vec4F32 grid_line_color = df_rgba_from_theme_color(DF_ThemeColor_TextWeak);
   for(EachEnumVal(Axis2, axis))
   {
     for(F32 v = rect_cvs.p0.v[axis] - mod_f32(rect_cvs.p0.v[axis], grid_cell_size_cvs);
@@ -1059,7 +1080,7 @@ DF_VIEW_UI_FUNCTION_DEF(bitmap)
 {
   DF_BitmapViewState *bvs = df_view_user_state(view, DF_BitmapViewState);
   Temp scratch = scratch_begin(0, 0);
-  DBGI_Scope *dbgi_scope = dbgi_scope_open();
+  DI_Scope *di_scope = di_scope_open();
   HS_Scope *hs_scope = hs_scope_open();
   TEX_Scope *tex_scope = tex_scope_open();
   
@@ -1070,13 +1091,13 @@ DF_VIEW_UI_FUNCTION_DEF(bitmap)
   DF_Entity *thread = df_entity_from_handle(ctrl_ctx.thread);
   DF_Entity *process = df_entity_ancestor_from_kind(thread, DF_EntityKind_Process);
   U64 thread_unwind_rip_vaddr = df_query_cached_rip_from_thread_unwind(thread, ctrl_ctx.unwind_count);
-  EVAL_ParseCtx parse_ctx = df_eval_parse_ctx_from_process_vaddr(dbgi_scope, process, thread_unwind_rip_vaddr);
+  EVAL_ParseCtx parse_ctx = df_eval_parse_ctx_from_process_vaddr(di_scope, process, thread_unwind_rip_vaddr);
   
   //////////////////////////////
   //- rjf: evaluate expression
   //
   String8 expr = str8(view->query_buffer, view->query_string_size);
-  DF_Eval eval = df_eval_from_string(scratch.arena, dbgi_scope, &ctrl_ctx, &parse_ctx, &eval_string2expr_map_nil, expr);
+  DF_Eval eval = df_eval_from_string(scratch.arena, di_scope, &ctrl_ctx, &parse_ctx, &eval_string2expr_map_nil, expr);
   DF_Eval value_eval = df_value_mode_eval_from_eval(parse_ctx.type_graph, parse_ctx.rdi, &ctrl_ctx, eval);
   U64 base_vaddr = value_eval.imm_u64 ? value_eval.imm_u64 : value_eval.offset;
   U64 expected_size = bvs->top.width*bvs->top.height*r_tex2d_format_bytes_per_pixel_table[bvs->top.fmt];
@@ -1087,7 +1108,9 @@ DF_VIEW_UI_FUNCTION_DEF(bitmap)
   //
   U128 texture_key = ctrl_hash_store_key_from_process_vaddr_range(process->ctrl_machine_id, process->ctrl_handle, vaddr_range, 0);
   TEX_Topology topology = tex_topology_make(v2s32((S32)bvs->top.width, (S32)bvs->top.height), bvs->top.fmt);
-  R_Handle texture = tex_texture_from_key_topology(tex_scope, texture_key, topology);
+  U128 data_hash = {0};
+  R_Handle texture = tex_texture_from_key_topology(tex_scope, texture_key, topology, &data_hash);
+  String8 data = hs_data_from_hash(hs_scope, data_hash);
   
   //////////////////////////////
   //- rjf: build canvas box
@@ -1102,10 +1125,10 @@ DF_VIEW_UI_FUNCTION_DEF(bitmap)
   }
   
   //////////////////////////////
-  //- rjf: canvas box interaction
+  //- rjf: canvas dragging
   //
+  UI_Signal canvas_sig = ui_signal_from_box(canvas_box);
   {
-    UI_Signal canvas_sig = ui_signal_from_box(canvas_box);
     if(ui_dragging(canvas_sig))
     {
       if(ui_pressed(canvas_sig))
@@ -1140,21 +1163,78 @@ DF_VIEW_UI_FUNCTION_DEF(bitmap)
   }
   
   //////////////////////////////
+  //- rjf: calculate image coordinates
+  //
+  Rng2F32 img_rect_cvs = r2f32p(-topology.dim.x/2, -topology.dim.y/2, +topology.dim.x/2, +topology.dim.y/2);
+  Rng2F32 img_rect_scr = df_bitmap_view_state__screen_from_canvas_rect(bvs, canvas_rect, img_rect_cvs);
+  
+  //////////////////////////////
+  //- rjf: image-region canvas interaction
+  //
+  Vec2S32 mouse_bmp = {-1, -1};
+  if(ui_hovering(canvas_sig) && !ui_dragging(canvas_sig))
+  {
+    Vec2F32 mouse_scr = sub_2f32(ui_mouse(), rect.p0);
+    Vec2F32 mouse_cvs = df_bitmap_view_state__canvas_from_screen_pos(bvs, canvas_rect, mouse_scr);
+    if(contains_2f32(img_rect_cvs, mouse_cvs))
+    {
+      mouse_bmp = v2s32((S32)(mouse_cvs.x-img_rect_cvs.x0), (S32)(mouse_cvs.y-img_rect_cvs.y0));
+      S64 off_px = mouse_bmp.y*topology.dim.x + mouse_bmp.x;
+      S64 off_bytes = off_px*r_tex2d_format_bytes_per_pixel_table[topology.fmt];
+      if(0 <= off_bytes && off_bytes+r_tex2d_format_bytes_per_pixel_table[topology.fmt] <= data.size &&
+         r_tex2d_format_bytes_per_pixel_table[topology.fmt] != 0)
+      {
+        B32 color_is_good = 1;
+        Vec4F32 color = {0};
+        switch(topology.fmt)
+        {
+          default:{color_is_good = 0;}break;
+          case R_Tex2DFormat_R8:     {color = v4f32(((U8 *)(data.str+off_bytes))[0]/255.f, 0, 0, 1);}break;
+          case R_Tex2DFormat_RG8:    {color = v4f32(((U8 *)(data.str+off_bytes))[0]/255.f, ((U8 *)(data.str+off_bytes))[1]/255.f, 0, 1);}break;
+          case R_Tex2DFormat_RGBA8:  {color = v4f32(((U8 *)(data.str+off_bytes))[0]/255.f, ((U8 *)(data.str+off_bytes))[1]/255.f, ((U8 *)(data.str+off_bytes))[2]/255.f, ((U8 *)(data.str+off_bytes))[3]/255.f);}break;
+          case R_Tex2DFormat_BGRA8:  {color = v4f32(((U8 *)(data.str+off_bytes))[3]/255.f, ((U8 *)(data.str+off_bytes))[2]/255.f, ((U8 *)(data.str+off_bytes))[1]/255.f, ((U8 *)(data.str+off_bytes))[0]/255.f);}break;
+          case R_Tex2DFormat_R16:    {color = v4f32(((U16 *)(data.str+off_bytes))[0]/(F32)max_U16, 0, 0, 1);}break;
+          case R_Tex2DFormat_RGBA16: {color = v4f32(((U16 *)(data.str+off_bytes))[0]/(F32)max_U16, ((U16 *)(data.str+off_bytes))[1]/(F32)max_U16, ((U16 *)(data.str+off_bytes))[2]/(F32)max_U16, ((U16 *)(data.str+off_bytes))[3]/(F32)max_U16);}break;
+          case R_Tex2DFormat_R32:    {color = v4f32(((F32 *)(data.str+off_bytes))[0], 0, 0, 1);}break;
+          case R_Tex2DFormat_RG32:   {color = v4f32(((F32 *)(data.str+off_bytes))[0], ((F32 *)(data.str+off_bytes))[1], 0, 1);}break;
+          case R_Tex2DFormat_RGBA32: {color = v4f32(((F32 *)(data.str+off_bytes))[0], ((F32 *)(data.str+off_bytes))[1], ((F32 *)(data.str+off_bytes))[2], ((F32 *)(data.str+off_bytes))[3]);}break;
+        }
+        if(color_is_good)
+        {
+          Vec4F32 hsva = hsva_from_rgba(color);
+          ui_do_color_tooltip_hsva(hsva);
+        }
+      }
+    }
+  }
+  
+  //////////////////////////////
   //- rjf: build image
   //
   UI_Parent(canvas_box)
   {
-    Rng2F32 img_rect_cvs = r2f32p(-topology.dim.x/2, -topology.dim.y/2, +topology.dim.x/2, +topology.dim.y/2);
-    Rng2F32 img_rect_scr = df_bitmap_view_state__screen_from_canvas_rect(bvs, canvas_rect, img_rect_cvs);
+    if(0 <= mouse_bmp.x && mouse_bmp.x < bvs->top.width &&
+       0 <= mouse_bmp.x && mouse_bmp.x < bvs->top.height)
+    {
+      F32 pixel_size_scr = 1.f*bvs->zoom;
+      Rng2F32 indicator_rect_scr = r2f32p(img_rect_scr.x0 + mouse_bmp.x*pixel_size_scr,
+                                          img_rect_scr.y0 + mouse_bmp.y*pixel_size_scr,
+                                          img_rect_scr.x0 + (mouse_bmp.x+1)*pixel_size_scr,
+                                          img_rect_scr.y0 + (mouse_bmp.y+1)*pixel_size_scr);
+      UI_Rect(indicator_rect_scr)
+      {
+        ui_build_box_from_key(UI_BoxFlag_DrawBorder|UI_BoxFlag_Floating, ui_key_zero());
+      }
+    }
     UI_Rect(img_rect_scr) UI_Flags(UI_BoxFlag_DrawBorder|UI_BoxFlag_DrawDropShadow|UI_BoxFlag_Floating)
     {
-      ui_image(texture, r2f32p(0, 0, (F32)bvs->top.width, (F32)bvs->top.height), v4f32(1, 1, 1, 1), 0, str8_lit("bmp_image"));
+      ui_image(texture, R_Tex2DSampleKind_Nearest, r2f32p(0, 0, (F32)bvs->top.width, (F32)bvs->top.height), v4f32(1, 1, 1, 1), 0, str8_lit("bmp_image"));
     }
   }
   
   hs_scope_close(hs_scope);
   tex_scope_close(tex_scope);
-  dbgi_scope_close(dbgi_scope);
+  di_scope_close(di_scope);
   scratch_end(scratch);
 }
 
@@ -1162,7 +1242,7 @@ DF_VIEW_UI_FUNCTION_DEF(bitmap)
 //~ rjf: "geo"
 
 internal DF_GeoTopologyInfo
-df_vr_geo_topology_info_from_cfg(DBGI_Scope *scope, DF_CtrlCtx *ctrl_ctx, EVAL_ParseCtx *parse_ctx, EVAL_String2ExprMap *macro_map, DF_CfgNode *cfg)
+df_vr_geo_topology_info_from_cfg(DI_Scope *scope, DF_CtrlCtx *ctrl_ctx, EVAL_ParseCtx *parse_ctx, EVAL_String2ExprMap *macro_map, DF_CfgNode *cfg)
 {
   Temp scratch = scratch_begin(0, 0);
   DF_GeoTopologyInfo result = {0};
@@ -1208,7 +1288,6 @@ internal UI_BOX_CUSTOM_DRAW(df_vr_geo_box_draw)
 {
   DF_VR_GeoBoxDrawData *draw_data = (DF_VR_GeoBoxDrawData *)user_data;
   DF_VR_GeoState *state = df_view_rule_block_user_state(draw_data->key, DF_VR_GeoState);
-  Vec4F32 bg_color = box->background_color;
   
   // rjf: get clip
   Rng2F32 clip = box->rect;
@@ -1256,7 +1335,7 @@ DF_GFX_VIEW_RULE_ROW_UI_FUNCTION_DEF(geo)
 {
   DF_Eval value_eval = df_value_mode_eval_from_eval(parse_ctx->type_graph, parse_ctx->rdi, ctrl_ctx, eval);
   U64 base_vaddr = value_eval.imm_u64 ? value_eval.imm_u64 : value_eval.offset;
-  UI_Font(df_font_from_slot(DF_FontSlot_Code)) UI_TextColor(df_rgba_from_theme_color(DF_ThemeColor_WeakText))
+  UI_Font(df_font_from_slot(DF_FontSlot_Code)) UI_FlagsAdd(UI_BoxFlag_DrawTextWeak)
     ui_labelf("0x%I64x -> Geometry", base_vaddr);
 }
 
@@ -1283,7 +1362,7 @@ DF_GFX_VIEW_RULE_BLOCK_UI_FUNCTION_DEF(geo)
   U64 base_vaddr = value_eval.imm_u64 ? value_eval.imm_u64 : value_eval.offset;
   
   //- rjf: extract extra geo topology info from view rule
-  DF_GeoTopologyInfo top = df_vr_geo_topology_info_from_cfg(dbgi_scope, ctrl_ctx, parse_ctx, macro_map, cfg);
+  DF_GeoTopologyInfo top = df_vr_geo_topology_info_from_cfg(di_scope, ctrl_ctx, parse_ctx, macro_map, cfg);
   Rng1U64 index_buffer_vaddr_range = r1u64(base_vaddr, base_vaddr+top.index_count*sizeof(U32));
   Rng1U64 vertex_buffer_vaddr_range = top.vertices_vaddr_range;
   

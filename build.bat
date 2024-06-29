@@ -15,7 +15,7 @@ cd /D "%~dp0"
 :: `build raddbg clang`
 :: `build raddbg release`
 :: `build raddbg asan telemetry`
-:: `build raddbgi_from_pdb`
+:: `build rdi_from_pdb`
 ::
 :: For a full list of possible build targets and their build command lines,
 :: search for @build_targets in this file.
@@ -33,7 +33,8 @@ if "%debug%"=="1"   set release=0 && echo [debug mode]
 if "%release%"=="1" set debug=0 && echo [release mode]
 if "%msvc%"=="1"    set clang=0 && echo [msvc compile]
 if "%clang%"=="1"   set msvc=0 && echo [clang compile]
-if "%~1"==""        echo [default mode, assuming `raddbg` build] && set raddbg=1
+if "%~1"==""                     echo [default mode, assuming `raddbg` build] && set raddbg=1
+if "%~1"=="release" if "%~2"=="" echo [default mode, assuming `raddbg` build] && set raddbg=1
 
 :: --- Unpack Command Line Build Arguments ------------------------------------
 set auto_compile_flags=
@@ -42,8 +43,8 @@ if "%asan%"=="1"      set auto_compile_flags=%auto_compile_flags% -fsanitize=add
 
 :: --- Compile/Link Line Definitions ------------------------------------------
 set cl_common=     /I..\src\ /I..\local\ /nologo /FC /Z7
-set clang_common=  -I..\src\ -I..\local\ -gcodeview -fdiagnostics-absolute-paths -Wall -Wno-unknown-warning-option -Wno-missing-braces -Wno-unused-function -Wno-writable-strings -Wno-unused-value -Wno-unused-variable -Wno-unused-local-typedef -Wno-deprecated-register -Wno-deprecated-declarations -Wno-unused-but-set-variable -Wno-single-bit-bitfield-constant-conversion -Xclang -flto-visibility-public-std -D_USE_MATH_DEFINES -Dstrdup=_strdup -Dgnu_printf=printf
-set cl_debug=      call cl /Od /DBUILD_DEBUG=1 %cl_common% %auto_compile_flags%
+set clang_common=  -I..\src\ -I..\local\ -gcodeview -fdiagnostics-absolute-paths -Wall -Wno-unknown-warning-option -Wno-missing-braces -Wno-unused-function -Wno-writable-strings -Wno-unused-value -Wno-unused-variable -Wno-unused-local-typedef -Wno-deprecated-register -Wno-deprecated-declarations -Wno-unused-but-set-variable -Wno-single-bit-bitfield-constant-conversion -Wno-compare-distinct-pointer-types -Wno-initializer-overrides -Wno-incompatible-pointer-types-discards-qualifiers -Xclang -flto-visibility-public-std -D_USE_MATH_DEFINES -Dstrdup=_strdup -Dgnu_printf=printf
+set cl_debug=      call cl /Od /Ob1 /DBUILD_DEBUG=1 %cl_common% %auto_compile_flags%
 set cl_release=    call cl /O2 /DBUILD_DEBUG=0 %cl_common% %auto_compile_flags%
 set clang_debug=   call clang -g -O0 -DBUILD_DEBUG=1 %clang_common% %auto_compile_flags%
 set clang_release= call clang -g -O2 -DBUILD_DEBUG=0 %clang_common% %auto_compile_flags%
@@ -54,12 +55,14 @@ set clang_out=     -o
 
 :: --- Per-Build Settings -----------------------------------------------------
 set link_dll=-DLL
-if "%msvc%"=="1"  set only_compile=/c
-if "%clang%"=="1" set only_compile=-c
-if "%msvc%"=="1"  set EHsc=/EHsc
-if "%clang%"=="1" set EHsc=
-if "%msvc%"=="1"  set rc=rc.exe
-if "%clang%"=="1" set rc=llvm-rc.exe
+if "%msvc%"=="1"    set only_compile=/c
+if "%clang%"=="1"   set only_compile=-c
+if "%msvc%"=="1"    set EHsc=/EHsc
+if "%clang%"=="1"   set EHsc=
+if "%msvc%"=="1"    set no_aslr=/DYNAMICBASE:NO
+if "%clang%"=="1"   set no_aslr=-Wl,/DYNAMICBASE:NO
+if "%msvc%"=="1"    set rc=call rc
+if "%clang%"=="1"   set rc=call llvm-rc
 
 :: --- Choose Compile/Link Lines ----------------------------------------------
 if "%msvc%"=="1"      set compile_debug=%cl_debug%
@@ -96,17 +99,25 @@ if not "%no_meta%"=="1" (
 
 :: --- Build Everything (@build_targets) --------------------------------------
 pushd build
-if "%raddbg%"=="1"                     %compile% %gfx%       ..\src\raddbg\raddbg_main.cpp                                                %compile_link% %out%raddbg.exe || exit /b 1
-if "%raddbgi_from_pdb%"=="1"           %compile%             ..\src\raddbgi_from_pdb\raddbgi_from_pdb_main.c                              %compile_link% %out%raddbgi_from_pdb.exe || exit /b 1
-if "%raddbgi_from_dwarf%"=="1"         %compile%             ..\src\raddbgi_from_dwarf\raddbgi_from_dwarf.c                               %compile_link% %out%raddbgi_from_dwarf.exe || exit /b 1
-if "%raddbgi_dump%"=="1"               %compile%             ..\src\raddbgi_dump\raddbgi_dump_main.c                                      %compile_link% %out%raddbgi_dump.exe || exit /b 1
-if "%raddbgi_breakpad_from_pdb%"=="1"  %compile%             ..\src\raddbgi_breakpad_from_pdb\raddbgi_breakpad_from_pdb_main.c            %compile_link% %out%raddbgi_breakpad_from_pdb.exe || exit /b 1
-if "%ryan_scratch%"=="1"               %compile%             ..\src\scratch\ryan_scratch.c                                                %compile_link% %out%ryan_scratch.exe || exit /b 1
-if "%cpp_tests%"=="1"                  %compile%             ..\src\scratch\i_hate_c_plus_plus.cpp                                        %compile_link% %out%cpp_tests.exe || exit /b 1
-if "%look_at_raddbg%"=="1"             %compile%             ..\src\scratch\look_at_raddbg.c                                              %compile_link% %out%look_at_raddbg.exe || exit /b 1
-if "%mule_main%"=="1"                  del vc*.pdb mule*.pdb && %compile_release% %only_compile% ..\src\mule\mule_inline.cpp && %compile_release% %only_compile% ..\src\mule\mule_o2.cpp && %compile_debug% %EHsc% ..\src\mule\mule_main.cpp ..\src\mule\mule_c.c mule_inline.obj mule_o2.obj %compile_link% %out%mule_main.exe || exit /b 1
-if "%mule_module%"=="1"                %compile%             ..\src\mule\mule_module.cpp                                                  %compile_link% %link_dll% %out%mule_module.dll || exit /b 1
-if "%mule_hotload%"=="1"               %compile% ..\src\mule\mule_hotload_main.c %compile_link% %out%mule_hotload.exe & %compile% ..\src\mule\mule_hotload_module_main.c %compile_link% %link_dll% %out%mule_hotload_module.dll || exit /b 1
+if "%raddbg%"=="1"                     set didbuild=1 && %compile%             ..\src\raddbg\raddbg_main.c                                                  %compile_link% %out%raddbg.exe || exit /b 1
+if "%rdi_from_pdb%"=="1"               set didbuild=1 && %compile%             ..\src\rdi_from_pdb\rdi_from_pdb_main.c                                      %compile_link% %out%rdi_from_pdb.exe || exit /b 1
+if "%rdi_from_dwarf%"=="1"             set didbuild=1 && %compile%             ..\src\rdi_from_dwarf\rdi_from_dwarf.c                                       %compile_link% %out%rdi_from_dwarf.exe || exit /b 1
+if "%rdi_dump%"=="1"                   set didbuild=1 && %compile%             ..\src\rdi_dump\rdi_dump_main.c                                              %compile_link% %out%rdi_dump.exe || exit /b 1
+if "%rdi_breakpad_from_pdb%"=="1"      set didbuild=1 && %compile%             ..\src\rdi_breakpad_from_pdb\rdi_breakpad_from_pdb_main.c                    %compile_link% %out%rdi_breakpad_from_pdb.exe || exit /b 1
+if "%ryan_scratch%"=="1"               set didbuild=1 && %compile%             ..\src\scratch\ryan_scratch.c                                                %compile_link% %out%ryan_scratch.exe || exit /b 1
+if "%cpp_tests%"=="1"                  set didbuild=1 && %compile%             ..\src\scratch\i_hate_c_plus_plus.cpp                                        %compile_link% %out%cpp_tests.exe || exit /b 1
+if "%look_at_raddbg%"=="1"             set didbuild=1 && %compile%             ..\src\scratch\look_at_raddbg.c                                              %compile_link% %out%look_at_raddbg.exe || exit /b 1
+if "%mule_main%"=="1"                  set didbuild=1 && del vc*.pdb mule*.pdb && %compile_release% %only_compile% ..\src\mule\mule_inline.cpp && %compile_release% %only_compile% ..\src\mule\mule_o2.cpp && %compile_debug% %EHsc% ..\src\mule\mule_main.cpp ..\src\mule\mule_c.c mule_inline.obj mule_o2.obj %compile_link% %no_aslr% %out%mule_main.exe || exit /b 1
+if "%mule_module%"=="1"                set didbuild=1 && %compile%             ..\src\mule\mule_module.cpp                                                  %compile_link% %link_dll% %out%mule_module.dll || exit /b 1
+if "%mule_hotload%"=="1"               set didbuild=1 && %compile% ..\src\mule\mule_hotload_main.c %compile_link% %out%mule_hotload.exe & %compile% ..\src\mule\mule_hotload_module_main.c %compile_link% %link_dll% %out%mule_hotload_module.dll || exit /b 1
+if "%mule_peb_trample%"=="1" (
+  set didbuild=1
+  if exist mule_peb_trample.exe move mule_peb_trample.exe mule_peb_trample_old_%random%.exe
+  if exist mule_peb_trample_new.pdb move mule_peb_trample_new.pdb mule_peb_trample_old_%random%.pdb
+  if exist mule_peb_trample_new.rdi move mule_peb_trample_new.rdi mule_peb_trample_old_%random%.rdi
+  %compile% ..\src\mule\mule_peb_trample.c %compile_link% %out%mule_peb_trample_new.exe || exit /b 1
+  move mule_peb_trample_new.exe mule_peb_trample.exe
+)
 popd
 
 :: --- Unset ------------------------------------------------------------------
@@ -117,3 +128,10 @@ set compile_link=
 set out=
 set msvc=
 set debug=
+set release=
+
+:: --- Warn On No Builds ------------------------------------------------------
+if "%didbuild%"=="" (
+  echo [WARNING] no valid build target specified; must use build target names as arguments to this script, like `build raddbg` or `build rdi_from_pdb`.
+  exit /b 1
+)
