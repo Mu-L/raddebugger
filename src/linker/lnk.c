@@ -3253,7 +3253,7 @@ l.count += 1;                                                \
   B32                  build_win32_header               = 1;
   B32                  patch_relocs                     = 1;
   B32                  sort_exception_info              = 1;
-  B32                  build_imp_lib                    = 1;
+  B32                  build_imp_lib                    = config->build_imp_lib;
   LNK_ObjList          obj_list                         = {0};
   LNK_LibList          lib_index[LNK_InputSource_Count] = {0};
   String8              image_data                       = str8_zero();
@@ -3617,11 +3617,11 @@ l.count += 1;                                                \
             // is obj machine compatible? 
             if (obj->machine != COFF_MachineType_UNKNOWN && // obj with unknown machine type is compatible with any other machine type
                 config->machine != obj->machine) {
-              lnk_error(LNK_Error_IncompatibleObj,
-                        "conflicting machine types expected %S but got %S in obj %S",
-                        coff_string_from_machine_type(config->machine),
-                        coff_string_from_machine_type(obj->machine),
-                        obj->path);
+              lnk_error_obj(LNK_Error_IncompatibleObj,
+                            obj,
+                            "conflicting machine types expected %S but got %S",
+                            coff_string_from_machine_type(config->machine),
+                            coff_string_from_machine_type(obj->machine));
             }
           }
           ProfEnd();
@@ -3950,12 +3950,12 @@ l.count += 1;                                                \
           
           // debug entry for PDB
           if (config->debug_mode != LNK_DebugMode_None && config->debug_mode != LNK_DebugMode_Null) {
-            lnk_build_debug_pdb(st, symtab, debug_sect, debug_dir_array_chunk, config->time_stamp, config->guid, config->age, config->pdb_name);
+            lnk_build_debug_pdb(st, symtab, debug_sect, debug_dir_array_chunk, config->time_stamp, config->guid, config->age, config->pdb_alt_path);
           }
           
           // debug entry for RDI
           if (config->rad_debug == LNK_SwitchState_Yes) {
-            lnk_build_debug_rdi(st, symtab, debug_sect, debug_dir_array_chunk, config->time_stamp, config->guid, config->rad_debug_name);
+            lnk_build_debug_rdi(st, symtab, debug_sect, debug_dir_array_chunk, config->time_stamp, config->guid, config->rad_debug_alt_path);
           }
           
           ProfEnd();
