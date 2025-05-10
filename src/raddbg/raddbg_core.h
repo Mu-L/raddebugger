@@ -172,6 +172,8 @@ struct RD_AutocompCursorInfo
   String8 list_expr;
   String8 filter;
   Rng1U64 replaced_range;
+  String8 callee_expr;
+  MD_Node *arg_schema;
 };
 
 ////////////////////////////////
@@ -221,7 +223,7 @@ struct RD_ViewState
   void *user_data;
   
   // rjf: query state
-  B32 query_is_selected;
+  B32 query_is_open;
   TxtPt query_cursor;
   TxtPt query_mark;
   U8 query_buffer[KB(1)];

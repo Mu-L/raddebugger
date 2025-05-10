@@ -248,6 +248,8 @@ RD_VocabTable:
       //- rjf: autocompletion
       @display_name('Autocompletion Lister') @description("Enables the autocompletion lister while typing expressions.") @default(1)
         'autocompletion_lister': bool,
+      @display_name('View Call Argument Helper') @description("Enables the view call argument helper, which shows view arguments and documentation, while typing expressions.") @default(1)
+        'view_call_argument_helper': bool,
       
       //- rjf: thread & breakpoint decorations
       @default(1) @display_name('Thread Lines') @description("Controls whether or not a long horizontal line is drawn before the next line or instruction that the selected thread will execute in source and disassembly views.")
@@ -434,7 +436,7 @@ RD_VocabTable:
       @row_commands(@file copy_tab_full_path, @file show_file_in_explorer, duplicate_tab, close_tab)
       x:
     {
-      @override @display_name('Tab Font Size') @description("Controls the tab's font size.")
+      @override @display_name('Tab Font Size') @description("Controls the tab's font size.") @no_callee_helper
         'font_size': @range[6, 72] u64,
     }
     ```
@@ -466,7 +468,9 @@ RD_VocabTable:
         'lang': code_string,
       @default(1) @description("Controls whether or not line numbers are shown.")
         'show_line_numbers':bool,
-      @no_revert @default(0) @display_name('Transient') @description("Controls whether or not this tab will be automatically replaced by the debugger when it snaps to new source code locations.")
+      @no_callee_helper @default(0) @display_name('Scroll To Bottom On Change') @description("Scrolls to the bottom if the text is changed.")
+        'scroll_to_bottom_on_change':bool,
+      @no_callee_helper @no_revert @default(0) @display_name('Transient') @description("Controls whether or not this tab will be automatically replaced by the debugger when it snaps to new source code locations.")
         'auto': bool,
     }
     ```
@@ -481,15 +485,15 @@ RD_VocabTable:
       'arch':        code_string,
       'syntax':      code_string,
       'size':        expr_string,
-      @default(1) @description("Controls whether or not addresses are shown in the disassembly text.")
+      @no_callee_helper @default(1) @description("Controls whether or not addresses are shown in the disassembly text.")
         'show_addresses':    bool,
-      @default(0) @description("Controls whether or not code bytes are shown in the disassembly text.")
+      @no_callee_helper @default(0) @description("Controls whether or not code bytes are shown in the disassembly text.")
         'show_code_bytes':   bool,
-      @default(1) @description("Controls whether or not source lines, corresponding to disassembly instruction ranges, are shown in the disassembly text.")
+      @no_callee_helper @default(1) @description("Controls whether or not source lines, corresponding to disassembly instruction ranges, are shown in the disassembly text.")
         'show_source_lines': bool,
-      @default(1) @description("Controls whether or not disassembly text is decorated with symbol names.")
+      @no_callee_helper @default(1) @description("Controls whether or not disassembly text is decorated with symbol names.")
         'show_symbol_names': bool,
-      @default(1) @description("Controls whether or not line numbers are shown.")
+      @no_callee_helper @default(1) @description("Controls whether or not line numbers are shown.")
         'show_line_numbers': bool,
     }
     ```
@@ -519,8 +523,8 @@ RD_VocabTable:
     {
       @display_name("Base Pointer") @description("An expression to describe the base address or offset of the bitmap data.")
         'expression': expr_string,
-      @order(0) 'w': u64,
-      @order(1) 'h': u64,
+      @description("An expression describing the width of the bitmap, in pixels.") @order(0) 'w': u64,
+      @description("An expression describing the height of the bitmap, in pixels.") @order(1) 'h': u64,
       @display_name("Bitmap Format") @description("The pixel format that the bitmap data should be interpreted as being within.")
         'fmt': code_string,
     }
@@ -591,7 +595,7 @@ RD_VocabTable:
     breakpoint,
     ```
       @row_commands(enable_cfg, duplicate_cfg, remove_cfg)
-      @collection_commands(toggle_breakpoint, add_breakpoint, add_address_breakpoint, clear_breakpoints)
+      @collection_commands(toggle_breakpoint, add_breakpoint, add_address_breakpoint, add_function_breakpoint, clear_breakpoints)
       x:
     {
       'label':            code_string,
@@ -728,6 +732,7 @@ RD_RegTable:
   // rjf: general parameters
   {U32               pid              PID           }
   {B32               force_confirm    ForceConfirm  }
+  {B32               force_focus      ForceFocus    }
   {B32               prefer_disasm    PreferDisasm  }
   {B32               no_rich_tooltip  NoRichTooltip }
   {B32               do_implicit_root DoImplicitRoot}
@@ -865,7 +870,7 @@ RD_CmdTable:    //               |        |              |                |     
   //- rjf: files
   {SetCurrentPath                 0        1              0                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           FileOutline           "set_current_path"            "Set Current Path"                            "Sets the debugger's current path, which is used as a starting point when browsing for files."                     ""                               ""                                                               }
   {Open                           1        1              0                0               `folder:\\"$input\\"`                            FilePath           null              Nil                     Null       1  0  0  0  0  1  1                                                           FileOutline           "open"                        "Open"                                        "Opens a file."                                                                                                    "code,source,file"               ""                                                               }
-  {Switch                         1        1              0                0               "query:recent_files"                             Cfg                null              RecentFile              Null       0  0  0  0  0  1  1                                                           FileOutline           "switch"                      "Switch"                                      "Switches to a recent file."                                                                                       "code,source,file"               ""                                                               }
+  {Switch                         1        0              0                0               "query:recent_files"                             Cfg                null              RecentFile              Null       0  0  0  0  0  1  1                                                           FileOutline           "switch"                      "Switch"                                      "Switches to a recent file."                                                                                       "code,source,file"               ""                                                               }
   {SwitchToPartnerFile            1        1              0                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           FileOutline           "switch_to_partner_file"      "Switch To Partner File"                      "Switches to the focused file's partner; or from header to implementation or vice versa."                          "code,source,file"               ""                                                               }
   {RecordFileInProject            0        0              0                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           FileOutline           "record_file_in_project"      "Record File In Project"                      "Records the passed file path as a recent file in the currently loaded project."                                   ""                               ""                                                               }
   {ShowFileInExplorer             1        1              0                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           FolderClosedFilled    "show_file_in_explorer"       "Show File In Explorer"                       "Opens the operating system's file explorer and shows the selected file."                                          ""                               "$file,"                                                         }
@@ -978,9 +983,10 @@ RD_CmdTable:    //               |        |              |                |     
   {SaveToProject                  0        0              0                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           Briefcase             "save_cfg_to_project"         "Save To Project"                             "Saves the config tree to the project."                                                                            ""                               ""                                                               }
   
   //- rjf: breakpoints
-  {AddBreakpoint                  1        1              0                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           CircleFilled          "add_breakpoint"              "Add Breakpoint"                              "Places a breakpoint at a given location (file path and line number, address, or symbol name)."                    ""                               ""                                                               }
+  {AddBreakpoint                  1        1              0                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           CircleFilled          "add_breakpoint"              "Add Line Breakpoint"                         "Places a breakpoint at a given location (file path and line number, address, or symbol name)."                    ""                               ""                                                               }
   {AddAddressBreakpoint           1        0              0                0               ""                                               Expr               null              Nil                     Null       0  0  0  0  1  1  1                                                           CircleFilled          "add_address_breakpoint"      "Add Address Breakpoint"                      "Places a breakpoint on the specified address."                                                                    ""                               "$breakpoints,"                                                  }
-  {ToggleBreakpoint               1        1              1                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           CircleFilled          "toggle_breakpoint"           "Toggle Breakpoint"                           "Places or removes a breakpoint at a given location (file path and line number, address, or symbol name)."         ""                               "$text_pt,"                                                      }
+  {AddFunctionBreakpoint          1        0              0                0               "query:procedures"                               String             null              Nil                     Null       0  0  0  0  1  1  1                                                           CircleFilled          "add_function_breakpoint"     "Add Function Breakpoint"                     "Places a breakpoint on the first address of the specified function."                                              ""                               "$breakpoints,"                                                  }
+  {ToggleBreakpoint               1        1              1                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           CircleFilled          "toggle_breakpoint"           "Toggle Line Breakpoint"                      "Places or removes a breakpoint at a given location (file path and line number, address, or symbol name)."         ""                               "$text_pt,"                                                      }
   {EnableBreakpoint               1        1              0                0               "query:breakpoints"                              Cfg                null              Breakpoint              Null       0  0  0  0  1  1  1                                                           CheckFilled           "enable_breakpoint"           "Enable Breakpoint"                           "Enables a breakpoint."                                                                                            ""                               ""                                                               }
   {DisableBreakpoint              1        1              0                0               "query:breakpoints"                              Cfg                null              Breakpoint              Null       0  0  0  0  1  1  1                                                           CheckHollow           "disable_breakpoint"          "Disable Breakpoint"                          "Disables a breakpoint."                                                                                           ""                               ""                                                               }
   {ClearBreakpoints               1        1              0                0               ""                                               Null               null              Nil                     Null       0  0  0  0  0  0  0                                                           Trash                 "clear_breakpoints"           "Clear Breakpoints"                           "Removes all breakpoints."                                                                                         ""                               ""                                                               }
@@ -1166,6 +1172,7 @@ RD_DefaultBindingTable:
   //- rjf: meta controls
   { "edit"                        F2        0        0         0          }
   { "accept"                      Return    0        0         0          }
+  { "accept"                      Space     0        0         0          }
   { "cancel"                      Esc       0        0         0          }
   
   //- rjf: directional movement & text controls
@@ -1238,6 +1245,7 @@ RD_DefaultBindingTable:
   //- rjf: breakpoints
   { "toggle_breakpoint"           F9        0        0         0          }
   { "add_address_breakpoint"      F9        0        shift     0          }
+  { "add_function_breakpoint"     F9        ctrl     shift     0          }
   
   //- rjf: attaching
   { "attach"                      F6        0        shift     0          }

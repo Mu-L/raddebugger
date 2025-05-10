@@ -161,7 +161,7 @@ rd_code_view_build(Arena *arena, RD_CodeViewState *cv, RD_CodeViewBuildFlags fla
   {
     RD_Cfg *view = rd_cfg_from_id(rd_regs()->view);
     RD_ViewState *vs = rd_view_state_from_cfg(view);
-    if(!vs->query_is_selected)
+    if(!vs->query_is_open)
     {
       RD_Cfg *query = rd_cfg_child_from_string_or_alloc(view, str8_lit("query"));
       RD_Cfg *input = rd_cfg_child_from_string_or_alloc(query, str8_lit("input"));
@@ -573,7 +573,7 @@ rd_code_view_build(Arena *arena, RD_CodeViewState *cv, RD_CodeViewBuildFlags fla
     cv->goto_line_num = 0;
     line_num = Clamp(1, line_num, text_info->lines_count);
     rd_regs()->cursor = rd_regs()->mark = txt_pt(line_num, 1);
-    cv->center_cursor = !cv->contain_cursor || (line_num < target_visible_line_num_range.min+4 || target_visible_line_num_range.max-4 < line_num);
+    cv->center_cursor = !cv->force_contain_only && (!cv->contain_cursor || (line_num < target_visible_line_num_range.min+4 || target_visible_line_num_range.max-4 < line_num));
   }
   
   //////////////////////////////
@@ -807,6 +807,7 @@ rd_code_view_build(Arena *arena, RD_CodeViewState *cv, RD_CodeViewBuildFlags fla
   //- rjf: store state
   //
   rd_store_view_scroll_pos(scroll_pos);
+  cv->force_contain_only = 0;
   
   scratch_end(scratch);
   ProfEnd();
@@ -1716,8 +1717,11 @@ rd_info_from_watch_row_cell(Arena *arena, EV_Row *row, EV_StringFlags string_fla
             expr_string = cell->eval.string;
             
             // rjf: try to form a simpler expression string out of the expression tree itself, *if* this
-            // is not an editable expression, and if this evaluation was successful
-            if(!(block_type->flags & E_TypeFlag_EditableChildren) && cell->eval.msgs.max_kind == E_MsgKind_Null)
+            // is not an editable expression, and if this evaluation was successful, and if this evaluation
+            // has a parent
+            if(!e_key_match(cell->eval.parent_key, e_key_zero()) &&
+               !(block_type->flags & E_TypeFlag_EditableChildren) &&
+               cell->eval.msgs.max_kind == E_MsgKind_Null)
             {
               // rjf: first, locate a notable expression - we special-case things like member accesses
               // or array indices, so we should grab those if possible
@@ -1740,7 +1744,7 @@ rd_info_from_watch_row_cell(Arena *arena, EV_Row *row, EV_StringFlags string_fla
                 }
               }
               
-              // rjf: generate expression string based on our notable expression
+              // rjf: generate expression extension string based on our notable expression
               switch(notable_expr->kind)
               {
                 // rjf: default case -> just take whatever string was directly passed via the evaluation
@@ -2067,6 +2071,17 @@ RD_VIEW_UI_FUNCTION_DEF(text)
   B32 file_is_missing = (rd_regs()->file_path.size != 0 && os_properties_from_file_path(rd_regs()->file_path).modified == 0);
   B32 key_has_data = !u128_match(hash, u128_zero()) && info.lines_count;
   ProfEnd();
+  
+  //////////////////////////////
+  //- rjf: update last hash - scroll-to-bottom if needed
+  //
+  if(rd_setting_b32_from_name(str8_lit("scroll_to_bottom_on_change")) && !u128_match(hash, cv->last_hash) && !u128_match(cv->last_hash, u128_zero()))
+  {
+    cv->goto_line_num = info.lines_count;
+    cv->contain_cursor = 1;
+    cv->force_contain_only = 1;
+  }
+  cv->last_hash = hash;
   
   //////////////////////////////
   //- rjf: build missing file interface
