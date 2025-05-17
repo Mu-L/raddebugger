@@ -3356,84 +3356,97 @@ ctrl_call_stack_frame_from_unwind_and_inline_depth(CTRL_CallStack *call_stack, U
 //~ rjf: Call Stack Cache Functions
 
 internal CTRL_CallStack
-ctrl_call_stack_from_thread(CTRL_Scope *scope, CTRL_Entity *thread, U64 endt_us)
+ctrl_call_stack_from_thread(CTRL_Scope *scope, CTRL_EntityCtx *entity_ctx, CTRL_Entity *thread, B32 high_priority, U64 endt_us)
 {
   CTRL_CallStack call_stack = {0};
+  CTRL_CallStackCache *cache = &ctrl_state->call_stack_cache;
+  
+  //////////////////////////////
+  //- rjf: unpack thread
+  //
+  CTRL_Handle handle = thread->handle;
+  U64 hash = ctrl_hash_from_handle(handle);
+  U64 slot_idx = hash%cache->slots_count;
+  U64 stripe_idx = slot_idx%cache->stripes_count;
+  CTRL_CallStackCacheSlot *slot = &cache->slots[slot_idx];
+  CTRL_CallStackCacheStripe *stripe = &cache->stripes[stripe_idx];
+  U64 reg_gen = ctrl_reg_gen();
+  U64 mem_gen = ctrl_mem_gen();
+  
+  //////////////////////////////
+  //- rjf: loop: try to grab cached call stack; request; wait
+  //
+  OS_MutexScopeR(stripe->rw_mutex) for(;;)
   {
-    CTRL_CallStackCache *cache = &ctrl_state->call_stack_cache;
-    
-    //- rjf: unpack thread
-    CTRL_Handle handle = thread->handle;
-    U64 hash = ctrl_hash_from_handle(handle);
-    U64 slot_idx = hash%cache->slots_count;
-    U64 stripe_idx = slot_idx%cache->stripes_count;
-    CTRL_CallStackCacheSlot *slot = &cache->slots[slot_idx];
-    CTRL_CallStackCacheStripe *stripe = &cache->stripes[stripe_idx];
-    
-    //- rjf: loop: try to grab cached call stack; request; wait
-    U64 reg_gen = ctrl_reg_gen();
-    U64 mem_gen = ctrl_mem_gen();
-    OS_MutexScopeR(stripe->rw_mutex) for(;;)
+    ////////////////////////////
+    //- rjf: try to grab cached
+    //
+    B32 is_good = 0;
+    B32 is_stale = 1;
+    B32 is_working = 0;
+    CTRL_CallStackCacheNode *node = 0;
     {
-      //- rjf: try to grab cached
-      B32 is_good = 0;
-      B32 is_stale = 0;
-      B32 is_working = 0;
-      CTRL_CallStackCacheNode *node = 0;
+      for(CTRL_CallStackCacheNode *n = slot->first; n != 0; n = n->next)
       {
-        for(CTRL_CallStackCacheNode *n = slot->first; n != 0; n = n->next)
+        if(ctrl_handle_match(n->thread, handle))
         {
-          if(ctrl_handle_match(n->thread, handle))
-          {
-            node = n;
-            is_good    = 1;
-            is_stale   = (reg_gen > n->reg_gen || mem_gen > n->mem_gen);
-            is_working = (n->working_count > 0);
-            call_stack = n->call_stack;
-            ctrl_scope_touch_call_stack_node__stripe_r_guarded(scope, stripe, n);
-            break;
-          }
+          node = n;
+          is_good    = 1;
+          is_stale   = (reg_gen > n->reg_gen || mem_gen > n->mem_gen);
+          is_working = (n->working_count > 0);
+          call_stack = n->call_stack;
+          ctrl_scope_touch_call_stack_node__stripe_r_guarded(scope, stripe, n);
+          break;
         }
       }
-      
-      //- rjf: create node if needed
-      if(!is_good) OS_MutexScopeRWPromote(stripe->rw_mutex)
-      {
-        for(CTRL_CallStackCacheNode *n = slot->first; n != 0; n = n->next)
-        {
-          if(ctrl_handle_match(n->thread, handle))
-          {
-            node = n;
-            break;
-          }
-        }
-        if(node == 0)
-        {
-          node = push_array(stripe->arena, CTRL_CallStackCacheNode, 1);
-          DLLPushBack(slot->first, slot->last, node);
-          node->thread = thread->handle;
-        }
-      }
-      
-      //- rjf: request if needed
-      if(!is_working && (!is_good || is_stale))
-      {
-        if(ctrl_u2csb_enqueue_req(thread->handle, endt_us) &&
-           async_push_work(ctrl_call_stack_build_work))
-        {
-          ins_atomic_u64_inc_eval(&node->working_count);
-        }
-      }
-      
-      //- rjf: good, or timeout? -> exit
-      if((is_good && !is_stale) || os_now_microseconds() >= endt_us)
-      {
-        break;
-      }
-      
-      //- rjf: time to wait for new result? -> wait
-      os_condition_variable_wait_rw_r(stripe->cv, stripe->rw_mutex, endt_us);
     }
+    
+    ////////////////////////////
+    //- rjf: create node if needed
+    //
+    if(!is_good) OS_MutexScopeRWPromote(stripe->rw_mutex)
+    {
+      node = 0;
+      for(CTRL_CallStackCacheNode *n = slot->first; n != 0; n = n->next)
+      {
+        if(ctrl_handle_match(n->thread, handle))
+        {
+          node = n;
+          break;
+        }
+      }
+      if(node == 0)
+      {
+        node = push_array(stripe->arena, CTRL_CallStackCacheNode, 1);
+        DLLPushBack(slot->first, slot->last, node);
+        node->thread = thread->handle;
+      }
+    }
+    
+    ////////////////////////////
+    //- rjf: request if needed
+    //
+    if(node != 0 && !is_working && is_stale)
+    {
+      if(ctrl_u2csb_enqueue_req(thread->handle, endt_us) &&
+         async_push_work(ctrl_call_stack_build_work, .priority = high_priority ? ASYNC_Priority_High : ASYNC_Priority_Low))
+      {
+        ins_atomic_u64_inc_eval(&node->working_count);
+      }
+    }
+    
+    ////////////////////////////
+    //- rjf: good, or timeout? -> exit
+    //
+    if(!is_stale || os_now_microseconds() >= endt_us)
+    {
+      break;
+    }
+    
+    ////////////////////////////
+    //- rjf: time to wait for new result? -> wait
+    //
+    os_condition_variable_wait_rw_r(stripe->cv, stripe->rw_mutex, endt_us);
   }
   return call_stack;
 }
@@ -4271,6 +4284,15 @@ ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, CTRL_Msg *msg, 
           log_infof("string:         \"%S\"\n",   ev->string);
           log_infof("ip_vaddr:       0x%I64x\n",  ev->instruction_pointer);
         }
+        raddbg_log("event:\n");
+        raddbg_log("kind:           %S\n",       dmn_event_kind_string_table[ev->kind]);
+        raddbg_log("process:        [%I64u]\n",  ev->process.u64[0]);
+        raddbg_log("thread:         [%I64u]\n",  ev->thread.u64[0]);
+        raddbg_log("module:         [%I64u]\n",  ev->module.u64[0]);
+        raddbg_log("pid:            %I64u\n",    ctrl_entity_from_handle(entity_ctx, ctrl_handle_make(CTRL_MachineID_Local, ev->process))->id);
+        raddbg_log("tid:            %I64u\n",    ctrl_entity_from_handle(entity_ctx, ctrl_handle_make(CTRL_MachineID_Local, ev->thread))->id);
+        raddbg_log("code:           %I64u\n",    ev->code);
+        raddbg_log("\n");
       }
       
       // rjf: determine if we should filter
@@ -6887,13 +6909,21 @@ ASYNC_WORK_DEF(ctrl_call_stack_build_work)
     
     //- rjf: compute unwind to find list of all concrete frames, then
     // call stack, to determine list of all concrete & inline frames
-    U64 pre_reg_gen = ctrl_reg_gen();
-    U64 pre_mem_gen = ctrl_mem_gen();
     Arena *arena = arena_alloc();
-    CTRL_Unwind unwind = ctrl_unwind_from_thread(arena, entity_ctx, thread_handle, 0);
-    CTRL_CallStack call_stack = ctrl_call_stack_from_unwind(arena, process, &unwind);
-    U64 post_reg_gen = ctrl_reg_gen();
-    U64 post_mem_gen = ctrl_mem_gen();
+    U64 pre_reg_gen = 0;
+    U64 post_reg_gen = 0;
+    U64 pre_mem_gen = 0;
+    U64 post_mem_gen = 0;
+    CTRL_Unwind unwind = {0};
+    CTRL_CallStack call_stack = {0};
+    {
+      pre_reg_gen = ctrl_reg_gen();
+      pre_mem_gen = ctrl_mem_gen();
+      unwind = ctrl_unwind_from_thread(arena, entity_ctx, thread_handle, os_now_microseconds()+5000);
+      call_stack = ctrl_call_stack_from_unwind(arena, process, &unwind);
+      post_reg_gen = ctrl_reg_gen();
+      post_mem_gen = ctrl_mem_gen();
+    }
     
     //- rjf: store new results in cache
     Arena *last_arena = arena;
@@ -6938,7 +6968,7 @@ ASYNC_WORK_DEF(ctrl_call_stack_build_work)
         // rjf: found, not committed? -> wait & retry
         if(found && !committed)
         {
-          os_condition_variable_wait_rw_w(stripe->cv, stripe->rw_mutex, os_now_microseconds()+100);
+          os_condition_variable_wait_rw_w(stripe->cv, stripe->rw_mutex, os_now_microseconds()+10);
         }
       }
       if(committed)

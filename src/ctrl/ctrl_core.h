@@ -617,7 +617,7 @@ struct CTRL_CallStackCacheNode
   U64 reg_gen;
   U64 mem_gen;
   
-  // rjf: refcounts
+  // rjf: counters
   U64 scope_touch_count;
   U64 working_count;
   
@@ -1045,7 +1045,7 @@ internal CTRL_CallStackFrame *ctrl_call_stack_frame_from_unwind_and_inline_depth
 ////////////////////////////////
 //~ rjf: Call Stack Cache Functions
 
-internal CTRL_CallStack ctrl_call_stack_from_thread(CTRL_Scope *scope, CTRL_Entity *thread, U64 endt_us);
+internal CTRL_CallStack ctrl_call_stack_from_thread(CTRL_Scope *scope, CTRL_EntityCtx *entity_ctx, CTRL_Entity *thread, B32 high_priority, U64 endt_us);
 
 ////////////////////////////////
 //~ rjf: Halting All Attached Processes
