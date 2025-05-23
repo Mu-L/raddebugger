@@ -505,13 +505,19 @@ typedef struct CTRL_ProcessMemoryRangeHashNode CTRL_ProcessMemoryRangeHashNode;
 struct CTRL_ProcessMemoryRangeHashNode
 {
   CTRL_ProcessMemoryRangeHashNode *next;
+  
+  // rjf: key
   Rng1U64 vaddr_range;
   B32 zero_terminated;
-  Rng1U64 vaddr_range_clamped;
-  U128 hash;
+  HS_ID id;
+  
+  // rjf: staleness info
   U64 mem_gen;
+  
+  // rjf: metadata
+  U64 working_count;
   U64 last_time_requested_us;
-  B32 is_taken;
+  U64 last_user_clock_idx_touched;
 };
 
 typedef struct CTRL_ProcessMemoryRangeHashSlot CTRL_ProcessMemoryRangeHashSlot;
@@ -528,6 +534,7 @@ struct CTRL_ProcessMemoryCacheNode
   CTRL_ProcessMemoryCacheNode *prev;
   Arena *arena;
   CTRL_Handle handle;
+  HS_Root root;
   U64 range_hash_slots_count;
   CTRL_ProcessMemoryRangeHashSlot *range_hash_slots;
 };
@@ -617,7 +624,7 @@ struct CTRL_CallStackCacheNode
   U64 reg_gen;
   U64 mem_gen;
   
-  // rjf: refcounts
+  // rjf: counters
   U64 scope_touch_count;
   U64 working_count;
   
@@ -791,6 +798,7 @@ struct CTRL_State
   OS_Handle c2u_ring_cv;
   
   // rjf: ctrl thread state
+  U64 ctrl_thread_run_state;
   String8 ctrl_thread_log_path;
   OS_Handle ctrl_thread;
   Log *ctrl_thread_log;
@@ -983,12 +991,8 @@ internal void ctrl_set_wakeup_hook(CTRL_WakeupFunctionType *wakeup_hook);
 ////////////////////////////////
 //~ rjf: Process Memory Functions
 
-//- rjf: process memory cache interaction
-internal U128 ctrl_calc_hash_store_key_from_process_vaddr_range(CTRL_Handle process, Rng1U64 range, B32 zero_terminated);
-internal U128 ctrl_stored_hash_from_process_vaddr_range(CTRL_Handle process, Rng1U64 range, B32 zero_terminated, B32 *out_is_stale, U64 endt_us);
-
-//- rjf: bundled key/stream helper
-internal U128 ctrl_hash_store_key_from_process_vaddr_range(CTRL_Handle process, Rng1U64 range, B32 zero_terminated);
+//- rjf: process memory cache key reading
+internal HS_Key ctrl_key_from_process_vaddr_range(CTRL_Handle process, Rng1U64 vaddr_range, B32 zero_terminated, U64 endt_us, B32 *out_is_stale);
 
 //- rjf: process memory cache reading helpers
 internal CTRL_ProcessMemorySlice ctrl_process_memory_slice_from_vaddr_range(Arena *arena, CTRL_Handle process, Rng1U64 range, U64 endt_us);
@@ -1045,7 +1049,7 @@ internal CTRL_CallStackFrame *ctrl_call_stack_frame_from_unwind_and_inline_depth
 ////////////////////////////////
 //~ rjf: Call Stack Cache Functions
 
-internal CTRL_CallStack ctrl_call_stack_from_thread(CTRL_Scope *scope, CTRL_Entity *thread, U64 endt_us);
+internal CTRL_CallStack ctrl_call_stack_from_thread(CTRL_Scope *scope, CTRL_EntityCtx *entity_ctx, CTRL_Entity *thread, B32 high_priority, U64 endt_us);
 
 ////////////////////////////////
 //~ rjf: Halting All Attached Processes
@@ -1114,8 +1118,8 @@ internal void ctrl_thread__single_step(DMN_CtrlCtx *ctrl_ctx, CTRL_Msg *msg);
 //~ rjf: Asynchronous Memory Streaming Functions
 
 //- rjf: user -> memory stream communication
-internal B32 ctrl_u2ms_enqueue_req(CTRL_Handle process, Rng1U64 vaddr_range, B32 zero_terminated, U64 endt_us);
-internal void ctrl_u2ms_dequeue_req(CTRL_Handle *out_process, Rng1U64 *out_vaddr_range, B32 *out_zero_terminated);
+internal B32 ctrl_u2ms_enqueue_req(HS_Key key, CTRL_Handle process, Rng1U64 vaddr_range, B32 zero_terminated, U64 endt_us);
+internal void ctrl_u2ms_dequeue_req(HS_Key *out_key, CTRL_Handle *out_process, Rng1U64 *out_vaddr_range, B32 *out_zero_terminated);
 
 //- rjf: entry point
 ASYNC_WORK_DEF(ctrl_mem_stream_work);

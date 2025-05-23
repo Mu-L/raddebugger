@@ -99,6 +99,27 @@ rd_title_fstrs_from_cfg(Arena *arena, RD_Cfg *cfg)
       params.color = rgba_secondary;
     }
     
+    //- rjf: [breakpoints] push hit marker
+    if(str8_match(cfg->string, str8_lit("breakpoint"), 0))
+    {
+      CTRL_Event stop_event = d_ctrl_last_stop_event();
+      if(stop_event.cause == CTRL_EventCause_UserBreakpoint)
+      {
+        RD_Cfg *bp = rd_cfg_from_id(stop_event.u64_code);
+        if(bp == cfg)
+        {
+          CTRL_Entity *thread = ctrl_entity_from_handle(&d_state->ctrl_entity_store->ctx, stop_event.entity);
+          Vec4F32 thread_color = rd_color_from_ctrl_entity(thread);
+          if(thread_color.w == 0)
+          {
+            thread_color = rgba_secondary;
+          }
+          dr_fstrs_push_new(arena, &result, &params, rd_icon_kind_text_table[RD_IconKind_RightArrow], .font = rd_font_from_slot(RD_FontSlot_Icons), .raster_flags = rd_raster_flags_from_slot(RD_FontSlot_Icons), .color = thread_color);
+          dr_fstrs_push_new(arena, &result, &params, str8_lit("  "));
+        }
+      }
+    }
+    
     //- rjf: push icon
     if(icon_kind != RD_IconKind_Null)
     {
@@ -525,7 +546,8 @@ rd_title_fstrs_from_ctrl_entity(Arena *arena, CTRL_Entity *entity, B32 include_e
     DI_Scope *di_scope = di_scope_open();
     CTRL_Entity *process = ctrl_entity_ancestor_from_kind(entity, CTRL_EntityKind_Process);
     Arch arch = entity->arch;
-    CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, entity, 0);
+    B32 call_stack_high_priority = ctrl_handle_match(entity->handle, rd_base_regs()->thread);
+    CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, &d_state->ctrl_entity_store->ctx, entity, call_stack_high_priority, call_stack_high_priority ? rd_state->frame_eval_memread_endt_us : 0);
     for(U64 idx = 0, limit = 6; idx < call_stack.frames_count && idx < limit; idx += 1)
     {
       CTRL_CallStackFrame *f = &call_stack.frames[call_stack.frames_count - 1 - idx];
@@ -1257,7 +1279,7 @@ rd_code_slice(RD_CodeSliceParams *params, TxtPt *cursor, TxtPt *mark, S64 *prefe
     };
     U64 line_idx = 0;
     for(S64 line_num = params->line_num_range.min;
-        line_num < params->line_num_range.max;
+        line_num <= params->line_num_range.max;
         line_num += 1, line_idx += 1)
     {
       String8 line_string = params->line_text[line_idx];
@@ -1949,11 +1971,11 @@ rd_code_slice(RD_CodeSliceParams *params, TxtPt *cursor, TxtPt *mark, S64 *prefe
   {
     U64 line_idx = 0;
     for(S64 line_num = params->line_num_range.min;
-        line_num < params->line_num_range.max;
+        line_num <= params->line_num_range.max;
         line_num += 1, line_idx += 1)
     {
       DR_FStrList line_fstrs = lines_fstrs[line_idx];
-      F32 line_text_dim = dr_dim_from_fstrs(&line_fstrs).x + params->line_num_width_px + params->catchall_margin_width_px + params->priority_margin_width_px;
+      F32 line_text_dim = dr_dim_from_fstrs(params->tab_size, &line_fstrs).x + params->line_num_width_px + params->catchall_margin_width_px + params->priority_margin_width_px;
       line_extras_off[line_idx] = Max(line_text_dim, params->font_size*30);
     }
   }

@@ -1011,7 +1011,8 @@ rd_watch_row_info_from_row(Arena *arena, EV_Row *row)
         CTRL_Scope *ctrl_scope = ctrl_scope_open();
         info.callstack_thread = entity;
         U64 frame_num = ev_block_num_from_id(block, key.child_id);
-        CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, entity, 0);
+        B32 call_stack_high_priority = ctrl_handle_match(entity->handle, rd_base_regs()->thread);
+        CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, &d_state->ctrl_entity_store->ctx, entity, call_stack_high_priority, call_stack_high_priority ? rd_state->frame_eval_memread_endt_us : 0);
         if(1 <= frame_num && frame_num <= call_stack.frames_count)
         {
           CTRL_CallStackFrame *f = &call_stack.frames[frame_num-1];
@@ -2380,7 +2381,7 @@ RD_VIEW_UI_FUNCTION_DEF(disasm)
       syntax = DASM_Syntax_ATT;
     }
   }
-  U128 dasm_key = rd_key_from_eval_space_range(space, range, 0);
+  HS_Key dasm_key = rd_key_from_eval_space_range(space, range, 0);
   U128 dasm_data_hash = {0};
   DASM_Params dasm_params = {0};
   {
@@ -2590,7 +2591,7 @@ RD_VIEW_UI_FUNCTION_DEF(memory)
   Rng1S64 scroll_idx_rng = r1s64(0, (view_range_last - view_range.min) / num_columns);
   
   //////////////////////////////
-  //- rjf: determine visible range of rows
+  //- rjf: determine visible range of rows (including occluded)
   //
   Rng1S64 viz_range_rows = {0};
   S64 num_possible_visible_rows = 0;
@@ -2611,6 +2612,19 @@ RD_VIEW_UI_FUNCTION_DEF(memory)
   Rng2F32 header_rect = r2f32p(0, 0, panel_dim.x, row_height_px);
   Rng2F32 footer_rect = r2f32p(0, panel_dim.y-footer_dim, panel_dim.x-scroll_bar_dim, panel_dim.y);
   Rng2F32 content_rect = r2f32p(0, row_height_px, panel_dim.x-scroll_bar_dim, panel_dim.y);
+  
+  //////////////////////////////
+  //- rjf: determine visible range of rows (only non-occluded)
+  //
+  Rng1S64 viz_range_nonoccluded_rows = {0};
+  S64 num_possible_nonoccluded_visible_rows = 0;
+  {
+    num_possible_nonoccluded_visible_rows = (dim_2f32(content_rect).y - dim_2f32(footer_rect).y) / row_height_px;
+    viz_range_nonoccluded_rows.min = viz_range_rows.min + (S64)(content_rect.y0 / row_height_px);
+    viz_range_nonoccluded_rows.max = viz_range_nonoccluded_rows.min + num_possible_nonoccluded_visible_rows;
+    viz_range_nonoccluded_rows.min = clamp_1s64(scroll_idx_rng, viz_range_nonoccluded_rows.min);
+    viz_range_nonoccluded_rows.max = clamp_1s64(scroll_idx_rng, viz_range_nonoccluded_rows.max);
+  }
   
   //////////////////////////////
   //- rjf: bump backwards if we are past the first
@@ -2765,7 +2779,7 @@ RD_VIEW_UI_FUNCTION_DEF(memory)
   {
     mv->center_cursor = 0;
     S64 cursor_row_idx = (cursor_base_vaddr - view_range.min) / num_columns;
-    S64 new_idx = (cursor_row_idx-num_possible_visible_rows/2+1);
+    S64 new_idx = (cursor_row_idx-num_possible_nonoccluded_visible_rows/2+1);
     new_idx = clamp_1s64(scroll_idx_rng, new_idx);
     ui_scroll_pt_target_idx(&scroll_pos.y, new_idx);
   }
@@ -2778,8 +2792,8 @@ RD_VIEW_UI_FUNCTION_DEF(memory)
     mv->contain_cursor = 0;
     S64 cursor_row_idx = (cursor_base_vaddr - view_range.min) / num_columns;
     Rng1S64 cursor_viz_range = r1s64(clamp_1s64(scroll_idx_rng, cursor_row_idx-2), clamp_1s64(scroll_idx_rng, cursor_row_idx+3));
-    S64 min_delta = Min(0, cursor_viz_range.min-viz_range_rows.min);
-    S64 max_delta = Max(0, cursor_viz_range.max-viz_range_rows.max);
+    S64 min_delta = Min(0, cursor_viz_range.min-viz_range_nonoccluded_rows.min);
+    S64 max_delta = Max(0, cursor_viz_range.max-viz_range_nonoccluded_rows.max);
     S64 new_idx = scroll_pos.y.idx+min_delta+max_delta;
     new_idx = clamp_1s64(scroll_idx_rng, new_idx);
     ui_scroll_pt_target_idx(&scroll_pos.y, new_idx);
@@ -2841,7 +2855,7 @@ RD_VIEW_UI_FUNCTION_DEF(memory)
     CTRL_Scope *ctrl_scope = ctrl_scope_open();
     CTRL_Entity *thread = ctrl_entity_from_handle(&d_state->ctrl_entity_store->ctx, rd_regs()->thread);
     CTRL_Entity *process = ctrl_entity_ancestor_from_kind(thread, CTRL_EntityKind_Process);
-    CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, thread, 0);
+    CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, &d_state->ctrl_entity_store->ctx, thread, 1, 0);
     
     //- rjf: fill unwind frame annotations
     if(call_stack.concrete_frames_count != 0) UI_Tag(str8_lit("weak"))
@@ -3571,7 +3585,7 @@ RD_VIEW_UI_FUNCTION_DEF(bitmap)
   //////////////////////////////
   //- rjf: map expression artifacts -> texture
   //
-  U128 texture_key = rd_key_from_eval_space_range(eval.space, offset_range, 0);
+  HS_Key texture_key = rd_key_from_eval_space_range(eval.space, offset_range, 0);
   TEX_Topology topology = tex_topology_make(dim, fmt);
   U128 data_hash = {0};
   R_Handle texture = tex_texture_from_key_topology(tex_scope, texture_key, topology, &data_hash);
@@ -4057,8 +4071,8 @@ RD_VIEW_UI_FUNCTION_DEF(geo3d)
   U64 base_offset = e_base_offset_from_eval(eval);
   Rng1U64 idxs_range = r1u64(base_offset, base_offset+count*sizeof(U32));
   Rng1U64 vtxs_range = r1u64(vtx_base_off, vtx_base_off+vtx_size);
-  U128 idxs_key = rd_key_from_eval_space_range(eval.space, idxs_range, 0);
-  U128 vtxs_key = rd_key_from_eval_space_range(eval.space, vtxs_range, 0);
+  HS_Key idxs_key = rd_key_from_eval_space_range(eval.space, idxs_range, 0);
+  HS_Key vtxs_key = rd_key_from_eval_space_range(eval.space, vtxs_range, 0);
   R_Handle idxs_buffer = geo_buffer_from_key(geo_scope, idxs_key);
   R_Handle vtxs_buffer = geo_buffer_from_key(geo_scope, vtxs_key);
   

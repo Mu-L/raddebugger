@@ -640,7 +640,7 @@ rd_cfg_tree_list_from_string(Arena *arena, String8 root_path, String8 string)
       {
         String8 src_n_string = src_n->string;
         String8 src_n_string__raw = raw_from_escaped_str8(scratch.arena, src_n_string);
-        if(!md_node_has_tag(schema->first, str8_lit("absolute"), 0))
+        if(!md_node_has_tag(schema->first, str8_lit("no_relativize"), 0))
         {
           if(str8_match(schema->first->string, str8_lit("path"), 0))
           {
@@ -730,7 +730,7 @@ rd_string_from_cfg_tree(Arena *arena, String8 root_path, RD_Cfg *cfg)
           }
           
           // rjf: paths -> relativize
-          if(!md_node_has_tag(c_schema->first, str8_lit("absolute"), 0))
+          if(!md_node_has_tag(c_schema->first, str8_lit("no_relativize"), 0))
           {
             if(str8_match(c_schema->first->string, str8_lit("path"), 0))
             {
@@ -1747,7 +1747,9 @@ rd_eval_space_read(void *u, E_Space space, void *out, Rng1U64 range)
     //- rjf: reads from hash store key
     case E_SpaceKind_HashStoreKey:
     {
-      U128 key = space.u128;
+      HS_Root root = {space.u64_0};
+      HS_ID id = {space.u128};
+      HS_Key key = hs_key_make(root, id);
       U128 hash = hs_hash_from_key(key, 0);
       HS_Scope *scope = hs_scope_open();
       {
@@ -1778,7 +1780,7 @@ rd_eval_space_read(void *u, E_Space space, void *out, Rng1U64 range)
       containing_range.max -= containing_range.max%chunk_size;
       
       // rjf: map to hash
-      U128 key = fs_key_from_path_range(file_path, containing_range);
+      HS_Key key  = fs_key_from_path_range(file_path, containing_range, 0);
       U128 hash = hs_hash_from_key(key, 0);
       
       // rjf: look up from hash store
@@ -1816,7 +1818,7 @@ rd_eval_space_read(void *u, E_Space space, void *out, Rng1U64 range)
         case CTRL_EntityKind_Thread:
         {
           CTRL_Scope *ctrl_scope = ctrl_scope_open();
-          CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, entity, 0);
+          CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, &d_state->ctrl_entity_store->ctx, entity, 1, rd_state->frame_eval_memread_endt_us);
           U64 concrete_frame_idx = e_interpret_ctx->reg_unwind_count;
           if(concrete_frame_idx < call_stack.concrete_frames_count)
           {
@@ -2136,28 +2138,30 @@ rd_eval_space_write(void *u, E_Space space, void *in, Rng1U64 range)
 
 //- rjf: asynchronous streamed reads -> hashes from spaces
 
-internal U128
+internal HS_Key
 rd_key_from_eval_space_range(E_Space space, Rng1U64 range, B32 zero_terminated)
 {
-  U128 result = {0};
+  HS_Key result = {0};
   switch(space.kind)
   {
     case E_SpaceKind_HashStoreKey:
     {
-      result = space.u128;
+      HS_Root root = {space.u64_0};
+      HS_ID id = {space.u128};
+      result = hs_key_make(root, id);
     }break;
     case E_SpaceKind_File:
     {
       U64 file_path_string_id = space.u64_0;
       String8 file_path = e_string_from_id(file_path_string_id);
-      result = fs_key_from_path_range(file_path, range);
+      result = fs_key_from_path_range(file_path, range, 0);
     }break;
     case RD_EvalSpaceKind_CtrlEntity:
     {
       CTRL_Entity *entity = rd_ctrl_entity_from_eval_space(space);
       if(entity->kind == CTRL_EntityKind_Process)
       {
-        result = ctrl_hash_store_key_from_process_vaddr_range(entity->handle, range, zero_terminated);
+        result = ctrl_key_from_process_vaddr_range(entity->handle, range, zero_terminated, 0, 0);
       }
     }break;
   }
@@ -2174,7 +2178,9 @@ rd_whole_range_from_eval_space(E_Space space)
   {
     case E_SpaceKind_HashStoreKey:
     {
-      U128 key = space.u128;
+      HS_Root root = {space.u64_0};
+      HS_ID id = {space.u128};
+      HS_Key key = hs_key_make(root, id);
       U128 hash = hs_hash_from_key(key, 0);
       HS_Scope *hs_scope = hs_scope_open();
       {
@@ -2867,7 +2873,7 @@ rd_view_ui(Rng2F32 rect)
       // rjf: unpack view's target expression & hash
       E_Eval eval = e_eval_from_string(expr_string);
       Rng1U64 range = r1u64(0, 1024);
-      U128 key = rd_key_from_eval_space_range(eval.space, range, 0);
+      HS_Key key = rd_key_from_eval_space_range(eval.space, range, 0);
       U128 hash = hs_hash_from_key(key, 0);
       
       // rjf: determine if hash's blob is ready, and which viewer to use
@@ -4494,50 +4500,12 @@ rd_view_ui(Rng2F32 rect)
                   last_row_info = *row_info;
                   
                   ////////////////////////
-                  //- rjf: determine if row's data is fresh and/or bad
-                  //
-                  ProfBegin("determine if row's data is fresh and/or bad");
-                  B32 row_is_fresh = 0;
-                  B32 row_is_bad = 0;
-                  switch(row->eval.irtree.mode)
-                  {
-                    default:{}break;
-                    case E_Mode_Offset:
-                    {
-                      CTRL_Entity *space_entity = rd_ctrl_entity_from_eval_space(row->eval.space);
-                      if(row->eval.space.kind == RD_EvalSpaceKind_CtrlEntity && space_entity->kind == CTRL_EntityKind_Process)
-                      {
-                        U64 size = e_type_byte_size_from_key(row->eval.irtree.type_key);
-                        size = Min(size, 64);
-                        Rng1U64 vaddr_rng = r1u64(row->eval.value.u64, row->eval.value.u64+size);
-                        CTRL_ProcessMemorySlice slice = ctrl_process_memory_slice_from_vaddr_range(scratch.arena, space_entity->handle, vaddr_rng, rd_state->frame_eval_memread_endt_us);
-                        for(U64 idx = 0; idx < (slice.data.size+63)/64; idx += 1)
-                        {
-                          if(slice.byte_changed_flags[idx] != 0)
-                          {
-                            row_is_fresh = 1;
-                          }
-                          if(slice.byte_bad_flags[idx] != 0)
-                          {row_is_bad = 1;
-                          }
-                        }
-                      }
-                    }break;
-                  }
-                  ProfEnd();
-                  
-                  ////////////////////////
                   //- rjf: determine row's flags & color palette
                   //
                   ProfBegin("determine row's flags & color palette");
                   UI_BoxFlags row_flags = UI_BoxFlag_DisableFocusOverlay;
                   {
-                    if(row_is_fresh)
-                    {
-                      ui_set_next_tag(str8_lit("fresh"));
-                      row_flags |= UI_BoxFlag_DrawBackground;
-                    }
-                    else if(global_row_idx & 1)
+                    if(global_row_idx & 1)
                     {
                       ui_set_next_tag(str8_lit("alt"));
                       row_flags |= UI_BoxFlag_DrawBackground;
@@ -4647,6 +4615,43 @@ rd_view_ui(Rng2F32 rect)
                       B32 cell_toggled = (cell_value_eval.value.u64 != 0);
                       B32 next_cell_toggled = cell_toggled;
                       
+                      ////////////////////////
+                      //- rjf: determine if cell evaluation's data is fresh and/or bad
+                      //
+                      ProfBegin("determine if cell evaluation's data is fresh and/or bad");
+                      B32 cell_is_fresh = 0;
+                      B32 cell_is_bad = 0;
+                      if(!(cell_info.flags & RD_WatchCellFlag_NoEval))
+                      {
+                        switch(cell->eval.irtree.mode)
+                        {
+                          default:{}break;
+                          case E_Mode_Offset:
+                          {
+                            CTRL_Entity *space_entity = rd_ctrl_entity_from_eval_space(cell->eval.space);
+                            if(cell->eval.space.kind == RD_EvalSpaceKind_CtrlEntity && space_entity->kind == CTRL_EntityKind_Process)
+                            {
+                              U64 size = e_type_byte_size_from_key(cell->eval.irtree.type_key);
+                              size = Min(size, 64);
+                              Rng1U64 vaddr_rng = r1u64(cell->eval.value.u64, cell->eval.value.u64+size);
+                              CTRL_ProcessMemorySlice slice = ctrl_process_memory_slice_from_vaddr_range(scratch.arena, space_entity->handle, vaddr_rng, rd_state->frame_eval_memread_endt_us);
+                              for(U64 idx = 0; idx < (slice.data.size+63)/64; idx += 1)
+                              {
+                                if(slice.byte_changed_flags[idx] != 0)
+                                {
+                                  cell_is_fresh = 1;
+                                }
+                                if(slice.byte_bad_flags[idx] != 0)
+                                {
+                                  cell_is_bad = 1;
+                                }
+                              }
+                            }
+                          }break;
+                        }
+                      }
+                      ProfEnd();
+                      
                       ////////////
                       //- rjf: compute slider parameters
                       //
@@ -4688,9 +4693,7 @@ rd_view_ui(Rng2F32 rect)
                       ////////////
                       //- rjf: determine cell's palette
                       //
-                      UI_BoxFlags cell_flags = 0;
                       Vec4F32 cell_background_color_override = {0};
-                      String8 cell_tag = {0};
                       {
                         if(cell_info.cfg->id == rd_get_hover_regs()->cfg &&
                            rd_state->hover_regs_slot == RD_RegSlot_Cfg)
@@ -4705,7 +4708,6 @@ rd_view_ui(Rng2F32 rect)
                           }
                           rgba.w *= ui_anim(ui_key_from_stringf(ui_key_zero(), "###cfg_hover_t_%p", cfg), 1.f, .rate = entity_hover_t_rate);
                           cell_background_color_override = rgba;
-                          cell_flags |= UI_BoxFlag_DrawBackground;
                         }
                         else if(ctrl_handle_match(cell_info.entity->handle, rd_get_hover_regs()->ctrl_entity) &&
                                 rd_state->hover_regs_slot == RD_RegSlot_CtrlEntity)
@@ -4720,7 +4722,21 @@ rd_view_ui(Rng2F32 rect)
                           }
                           rgba.w *= ui_anim(ui_key_from_stringf(ui_key_zero(), "###entity_hover_t_%p", entity), 1.f, .rate = entity_hover_t_rate);
                           cell_background_color_override = rgba;
-                          cell_flags |= UI_BoxFlag_DrawBackground;
+                        }
+                        else if(cell_is_fresh)
+                        {
+                          UI_TagF(".") UI_TagF("fresh")
+                          {
+                            cell_background_color_override = ui_color_from_name(str8_lit("background"));
+                          }
+                        }
+                        else if(cell_is_bad)
+                        {
+                          UI_TagF(".") UI_TagF("bad_pop")
+                          {
+                            cell_background_color_override = ui_color_from_name(str8_lit("background"));
+                            cell_background_color_override.w *= 0.2f;
+                          }
                         }
                       }
                       
@@ -4731,7 +4747,7 @@ rd_view_ui(Rng2F32 rect)
                       UI_PrefWidth(ui_px(cell_width_px, cell_width_strictness))
                       {
                         ui_set_next_fixed_height(floor_f32(row->visual_size * row_height_px));
-                        cell_box = ui_build_box_from_stringf(UI_BoxFlag_DrawSideLeft|cell_flags, "cell_%I64x_%I64x", row_hash, cell_id);
+                        cell_box = ui_build_box_from_stringf(UI_BoxFlag_DrawSideLeft, "cell_%I64x_%I64x", row_hash, cell_id);
                       }
                       
                       ////////////
@@ -4746,7 +4762,6 @@ rd_view_ui(Rng2F32 rect)
                         UI_FocusActive((cell_selected && ewv->text_editing) ? UI_FocusKind_On : UI_FocusKind_Off)
                         RD_Font(RD_FontSlot_Code)
                         UI_TagF("weak")
-                        UI_Tag(cell_tag)
                       {
                         //- rjf: cell has hook? -> build ui by calling hook
                         if(cell->kind == RD_WatchCellKind_ViewUI && cell_info.view_ui_rule != &rd_nil_view_ui_rule)
@@ -5005,6 +5020,12 @@ rd_view_ui(Rng2F32 rect)
                             {
                               cell_params.flags |= RD_CellFlag_Bindings;
                               cell_params.bindings_name = rd_cmd_name_from_eval(cell->eval);
+                            }
+                            
+                            // rjf: apply background override
+                            if(cell_background_color_override.w != 0)
+                            {
+                              cell_params.flags &= ~RD_CellFlag_NoBackground;
                             }
                           }
                           
@@ -5772,7 +5793,6 @@ rd_window_state_from_cfg(RD_Cfg *cfg)
   if(window_cfg != &rd_nil_cfg && ws == &rd_nil_window_state)
   {
     Temp scratch = scratch_begin(0, 0);
-    rd_state->frame_depth += 1;
     
     // rjf: unpack configuration options
     B32 has_pos = 0;
@@ -5847,7 +5867,6 @@ rd_window_state_from_cfg(RD_Cfg *cfg)
     DLLPushBack_NPZ(&rd_nil_window_state, rd_state->first_window_state, rd_state->last_window_state, ws, order_next, order_prev);
     DLLPushBack_NP(slot->first, slot->last, ws, hash_next, hash_prev);
     
-    rd_state->frame_depth -= 1;
     scratch_end(scratch);
   }
   
@@ -6399,7 +6418,8 @@ rd_window_frame(void)
             Vec4F32 code_color = ui_color_from_name(str8_lit("code_default"));
             Vec4F32 symbol_color = ui_color_from_name(str8_lit("code_symbol"));
             CTRL_Entity *process = ctrl_entity_ancestor_from_kind(ctrl_entity, CTRL_EntityKind_Process);
-            CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, ctrl_entity, 0);
+            B32 call_stack_high_priority = ctrl_handle_match(ctrl_entity->handle, rd_base_regs()->thread);
+            CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, &d_state->ctrl_entity_store->ctx, ctrl_entity, call_stack_high_priority, call_stack_high_priority ? rd_state->frame_eval_memread_endt_us : 0);
             if(call_stack.frames_count != 0)
             {
               ui_spacer(ui_em(1.5f, 1.f));
@@ -6518,7 +6538,7 @@ rd_window_frame(void)
     if(ws->dev_menu_is_open) RD_Font(RD_FontSlot_Code)
     {
       ui_set_next_flags(UI_BoxFlag_ViewScrollY|UI_BoxFlag_AllowOverflowY|UI_BoxFlag_ViewClamp);
-      UI_PaneF(r2f32p(30, 30, 30+ui_top_font_size()*100, ui_top_font_size()*150), "###dev_ctx_menu")
+      UI_PaneF(r2f32p(30, 30, 30+ui_top_font_size()*100, ui_top_font_size()*60), "###dev_ctx_menu")
       {
         //- rjf: capture
         if(!ProfIsCapturing() && ui_clicked(ui_buttonf("Begin Profiler Capture###prof_cap")))
@@ -6579,7 +6599,7 @@ rd_window_frame(void)
           ui_labelf("mark: (L:%I64d, C:%I64d)", regs->mark.line, regs->mark.column);
           ui_labelf("unwind_count: %I64u", regs->unwind_count);
           ui_labelf("inline_depth: %I64u", regs->inline_depth);
-          ui_labelf("text_key: [0x%I64x, 0x%I64x]", regs->text_key.u64[0], regs->text_key.u64[1]);
+          ui_labelf("text_key: [0x%I64x / 0x%I64x:0x%I64x]", regs->text_key.root.u64[0], regs->text_key.id.u128[0].u64[0], regs->text_key.id.u128[0].u64[1]);
           ui_labelf("lang_kind: '%S'", txt_extension_from_lang_kind(regs->lang_kind));
           ui_labelf("vaddr_range: [0x%I64x, 0x%I64x)", regs->vaddr_range.min, regs->vaddr_range.max);
           ui_labelf("voff_range: [0x%I64x, 0x%I64x)", regs->voff_range.min, regs->voff_range.max);
@@ -8915,7 +8935,7 @@ rd_window_frame(void)
                 TabTask *t = push_array(scratch.arena, TabTask, 1);
                 t->tab = tab;
                 t->fstrs = rd_title_fstrs_from_cfg(scratch.arena, tab);
-                F32 tab_width_target = dr_dim_from_fstrs(&t->fstrs).x + tab_close_width_px + ui_top_font_size()*1.f;
+                F32 tab_width_target = dr_dim_from_fstrs(ui_top_tab_size(), &t->fstrs).x + tab_close_width_px + ui_top_font_size()*1.f;
                 tab_width_target = Min(max_tab_width_px, tab_width_target);
                 t->tab_width = floor_f32(ui_anim(ui_key_from_stringf(ui_key_zero(), "tab_width_%p", tab), tab_width_target, .initial = reset ? tab_width_target : 0, .rate = rd_state->menu_animation_rate));
                 SLLQueuePush(first_tab_task, last_tab_task, t);
@@ -11019,6 +11039,7 @@ rd_frame(void)
   ProfBeginFunction();
   Temp scratch = scratch_begin(0, 0);
   log_scope_begin();
+  rd_state->frame_depth += 1;
   
   //////////////////////////////
   //- rjf: (DEBUG) take top-level cfg roots, stringize them, and store them to hash store
@@ -11069,7 +11090,7 @@ rd_frame(void)
   //////////////////////////////
   //- rjf: iterate all tabs, touch their view-states
   //
-  if(rd_state->frame_depth == 0)
+  if(rd_state->frame_depth == 1)
   {
     Temp scratch = scratch_begin(0, 0);
     RD_CfgList windows = rd_cfg_top_level_list_from_string(scratch.arena, str8_lit("window"));
@@ -11096,7 +11117,7 @@ rd_frame(void)
   //////////////////////////////
   //- rjf: garbage collect untouched immediate cfg trees
   //
-  if(rd_state->frame_depth == 0)
+  if(rd_state->frame_depth == 1)
   {
     RD_Cfg *transient = rd_cfg_child_from_string(rd_state->root_cfg, str8_lit("transient"));
     for(RD_Cfg *tln = transient->first, *next = &rd_nil_cfg; tln != &rd_nil_cfg; tln = next)
@@ -11129,7 +11150,7 @@ rd_frame(void)
   //////////////////////////////
   //- rjf: garbage collect untouched view states
   //
-  if(rd_state->frame_depth == 0)
+  if(rd_state->frame_depth == 1)
   {
     for EachIndex(slot_idx, rd_state->view_state_slots_count)
     {
@@ -11188,7 +11209,7 @@ rd_frame(void)
   //////////////////////////////
   //- rjf: animate all views
   //
-  if(rd_state->frame_depth == 0)
+  if(rd_state->frame_depth == 1)
   {
     F32 slow_rate = 1 - pow_f32(2, (-10.f * rd_state->frame_dt));
     F32 fast_rate = 1 - pow_f32(2, (-40.f * rd_state->frame_dt));
@@ -11235,19 +11256,18 @@ rd_frame(void)
   //- rjf: get events from the OS
   //
   OS_EventList events = {0};
-  if(rd_state->frame_depth == 0) DeferLoop(rd_state->frame_depth += 1, rd_state->frame_depth -= 1)
+  if(rd_state->frame_depth == 1)
   {
     events = os_get_events(scratch.arena, rd_state->num_frames_requested == 0);
   }
   
   //////////////////////////////
-  //- rjf: open frame scopes
+  //- rjf: push frame scopes
   //
-  if(rd_state->frame_depth == 0)
-  {
-    rd_state->frame_di_scope = di_scope_open();
-    rd_state->frame_ctrl_scope = ctrl_scope_open();
-  }
+  DI_Scope *frame_di_scope_restore = rd_state->frame_di_scope;
+  CTRL_Scope *frame_ctrl_scope_restore = rd_state->frame_ctrl_scope;
+  rd_state->frame_di_scope = di_scope_open();
+  rd_state->frame_ctrl_scope = ctrl_scope_open();
   
   //////////////////////////////
   //- rjf: calculate avg length in us of last many frames
@@ -12173,12 +12193,13 @@ rd_frame(void)
       //- rjf: add macro for output log
       {
         HS_Scope *hs_scope = hs_scope_open();
-        U128 key = d_state->output_log_key;
+        HS_Key key = d_state->output_log_key;
         U128 hash = hs_hash_from_key(key, 0);
         String8 data = hs_data_from_hash(hs_scope, hash);
         E_Space space = e_space_make(E_SpaceKind_HashStoreKey);
+        space.u64_0 = key.root.u64[0];
+        space.u128 = key.id.u128[0];
         E_Expr *expr = e_push_expr(scratch.arena, E_ExprKind_LeafOffset, r1u64(0, 0));
-        space.u128 = key;
         expr->space    = space;
         expr->mode     = E_Mode_Offset;
         expr->type_key = e_type_key_cons_array(e_type_key_basic(E_TypeKind_U8), data.size, 0);
@@ -12448,7 +12469,7 @@ rd_frame(void)
     ////////////////////////////
     //- rjf: process top-level graphical commands
     //
-    if(rd_state->frame_depth == 0)
+    if(rd_state->frame_depth == 1)
     {
       for(;rd_next_cmd(&cmd);) RD_RegsScope()
       {
@@ -12619,6 +12640,25 @@ rd_frame(void)
             if(!(info->query.flags & RD_QueryFlag_Required))
             {
               RD_RegsScope(.cmd_name = str8_zero()) rd_push_cmd(cmd->regs->cmd_name, rd_regs());
+            }
+            
+            // rjf: command has filesystem query, user wants native filesystem UI -> get the path then run the command
+            else if(info->query.slot == RD_RegSlot_FilePath && rd_setting_b32_from_name(str8_lit("use_native_file_system_dialog")))
+            {
+              RD_Cfg *user = rd_cfg_child_from_string(rd_state->root_cfg, str8_lit("user"));
+              RD_Cfg *current_path = rd_cfg_child_from_string(user, str8_lit("current_path"));
+              String8 current_path_string = current_path->first->string;
+              if(current_path_string.size == 0)
+              {
+                current_path_string = path_normalized_from_string(scratch.arena, os_get_current_path(scratch.arena));
+              }
+              String8 file_path = os_graphical_pick_file(scratch.arena, current_path_string);
+              file_path = path_normalized_from_string(scratch.arena, file_path);
+              if(file_path.size != 0)
+              {
+                RD_RegsScope(.cmd_name = str8_zero(), .file_path = file_path) rd_push_cmd(cmd->regs->cmd_name, rd_regs());
+                rd_cmd(RD_CmdKind_SetCurrentPath, .file_path = str8_chop_last_slash(file_path));
+              }
             }
             
             // rjf: command has required query -> prep query
@@ -15478,7 +15518,7 @@ rd_frame(void)
             HS_Scope *hs_scope = hs_scope_open();
             TXT_Scope *txt_scope = txt_scope_open();
             RD_Regs *regs = rd_regs();
-            U128 text_key = regs->text_key;
+            HS_Key text_key = regs->text_key;
             TXT_LangKind lang_kind = regs->lang_kind;
             TxtRng range = txt_rng(regs->cursor, regs->mark);
             U128 hash = {0};
@@ -15640,7 +15680,7 @@ rd_frame(void)
           {
             CTRL_Scope *ctrl_scope = ctrl_scope_open();
             CTRL_Entity *thread = ctrl_entity_from_handle(&d_state->ctrl_entity_store->ctx, rd_base_regs()->thread);
-            CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, thread, os_now_microseconds()+10000);
+            CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, &d_state->ctrl_entity_store->ctx, thread, 1, os_now_microseconds()+10000);
             CTRL_CallStackFrame *frame = ctrl_call_stack_frame_from_unwind_and_inline_depth(&call_stack, rd_regs()->unwind_count, rd_regs()->inline_depth);
             if(frame == 0)
             {
@@ -15659,7 +15699,7 @@ rd_frame(void)
           {
             CTRL_Scope *ctrl_scope = ctrl_scope_open();
             CTRL_Entity *thread = ctrl_entity_from_handle(&d_state->ctrl_entity_store->ctx, rd_base_regs()->thread);
-            CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, thread, os_now_microseconds()+10000);
+            CTRL_CallStack call_stack = ctrl_call_stack_from_thread(ctrl_scope, &d_state->ctrl_entity_store->ctx, thread, 1, os_now_microseconds()+10000);
             CTRL_CallStackFrame *current_frame = ctrl_call_stack_frame_from_unwind_and_inline_depth(&call_stack, rd_regs()->unwind_count, rd_regs()->inline_depth);
             CTRL_CallStackFrame *next_frame = current_frame;
             if(current_frame != 0) switch(kind)
@@ -16504,7 +16544,7 @@ rd_frame(void)
   // the commands pushed by the view will be in the queue, and the core can
   // treat that queue as r/w again.
   //
-  if(rd_state->frame_depth == 0)
+  if(rd_state->frame_depth == 1)
   {
     // rjf: rotate
     {
@@ -16709,11 +16749,10 @@ rd_frame(void)
   //////////////////////////////
   //- rjf: close frame scopes
   //
-  if(rd_state->frame_depth == 0)
-  {
-    di_scope_close(rd_state->frame_di_scope);
-    ctrl_scope_close(rd_state->frame_ctrl_scope);
-  }
+  di_scope_close(rd_state->frame_di_scope);
+  ctrl_scope_close(rd_state->frame_ctrl_scope);
+  rd_state->frame_di_scope = frame_di_scope_restore;
+  rd_state->frame_ctrl_scope = frame_ctrl_scope_restore;
   
   //////////////////////////////
   //- rjf: submit rendering to all windows
@@ -16733,7 +16772,7 @@ rd_frame(void)
   //////////////////////////////
   //- rjf: show windows after first frame
   //
-  if(rd_state->frame_depth == 0)
+  if(rd_state->frame_depth == 1)
   {
     RD_CfgIDList windows_to_show = {0};
     for(RD_WindowState *w = rd_state->first_window_state; w != &rd_nil_window_state; w = w->order_next)
@@ -16747,7 +16786,7 @@ rd_frame(void)
     {
       RD_Cfg *window = rd_cfg_from_id(n->v);
       RD_WindowState *ws = rd_window_state_from_cfg(window);
-      DeferLoop(rd_state->frame_depth += 1, rd_state->frame_depth -= 1) os_window_first_paint(ws->os);
+      os_window_first_paint(ws->os);
     }
   }
   
@@ -16768,7 +16807,7 @@ rd_frame(void)
   //////////////////////////////
   //- rjf: bump command batch ring buffer generation
   //
-  if(rd_state->frame_depth == 0)
+  if(rd_state->frame_depth == 1)
   {
     rd_state->cmds_gen += 1;
   }
@@ -16801,6 +16840,7 @@ rd_frame(void)
   }
 #endif
   
+  rd_state->frame_depth -= 1;
   scratch_end(scratch);
   ProfEnd();
 }

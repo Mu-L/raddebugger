@@ -831,6 +831,21 @@ os_gfx_init(void)
   {
     SetProcessDpiAwarenessContext_func(w32_DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   }
+  else
+  {
+    HMODULE shcore = LoadLibraryA("shcore.dll");
+    if(shcore)
+    {
+      typedef HRESULT (WINAPI* SetProcessDpiAwareness_t)(int);
+      SetProcessDpiAwareness_t SetProcessDpiAwareness = (void*)GetProcAddress(shcore, "SetProcessDpiAwareness");
+      if(SetProcessDpiAwareness)
+      {
+        SetProcessDpiAwareness(2);
+      }
+      FreeLibrary(shcore);
+    }
+    SetProcessDPIAware();
+  }
   
   //- rjf: register graphical-window class
   {
@@ -1560,6 +1575,29 @@ os_graphical_message(B32 error, String8 title, String8 message)
   String16 message16 = str16_from_8(scratch.arena, message);
   MessageBoxW(0, (WCHAR *)message16.str, (WCHAR *)title16.str, MB_OK|(!!error*MB_ICONERROR));
   scratch_end(scratch);
+}
+
+internal String8
+os_graphical_pick_file(Arena *arena, String8 initial_path)
+{
+  String8 result = {0};
+  {
+    Temp scratch = scratch_begin(&arena, 1);
+    U64 buffer_size = 4096;
+    U16 *buffer = push_array(scratch.arena, U16, buffer_size);
+    OPENFILENAMEW params = {sizeof(params)};
+    {
+      params.lpstrFile = (WCHAR *)buffer;
+      params.nMaxFile = buffer_size;
+      params.lpstrInitialDir = (WCHAR *)str16_from_8(scratch.arena, initial_path).str;
+    }
+    if(GetOpenFileNameW(&params))
+    {
+      result = str8_from_16(arena, str16_cstring((U16 *)buffer));
+    }
+    scratch_end(scratch);
+  }
+  return result;
 }
 
 ////////////////////////////////

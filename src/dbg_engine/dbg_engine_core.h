@@ -215,35 +215,6 @@ struct D_CmdList
 ////////////////////////////////
 //~ rjf: Main State Caches
 
-//- rjf: per-thread unwind cache
-
-typedef struct D_UnwindCacheNode D_UnwindCacheNode;
-struct D_UnwindCacheNode
-{
-  D_UnwindCacheNode *next;
-  D_UnwindCacheNode *prev;
-  U64 reggen;
-  U64 memgen;
-  Arena *arena;
-  CTRL_Handle thread;
-  CTRL_Unwind unwind;
-};
-
-typedef struct D_UnwindCacheSlot D_UnwindCacheSlot;
-struct D_UnwindCacheSlot
-{
-  D_UnwindCacheNode *first;
-  D_UnwindCacheNode *last;
-};
-
-typedef struct D_UnwindCache D_UnwindCache;
-struct D_UnwindCache
-{
-  U64 slots_count;
-  D_UnwindCacheSlot *slots;
-  D_UnwindCacheNode *free_node;
-};
-
 //- rjf: per-run tls-base-vaddr cache
 
 typedef struct D_RunTLSBaseCacheNode D_RunTLSBaseCacheNode;
@@ -312,10 +283,9 @@ struct D_State
   D_CmdList cmds;
   
   // rjf: output log key
-  U128 output_log_key;
+  HS_Key output_log_key;
   
   // rjf: per-run caches
-  D_UnwindCache unwind_cache;
   U64 tls_base_cache_reggen_idx;
   U64 tls_base_cache_memgen_idx;
   D_RunTLSBaseCache tls_base_caches[2];
@@ -397,7 +367,6 @@ internal CTRL_TrapList d_trap_net_from_thread__step_into_line(Arena *arena, CTRL
 
 //- rjf: symbol -> voff lookups
 internal U64 d_voff_from_dbgi_key_symbol_name(DI_Key *dbgi_key, String8 symbol_name);
-internal U64 d_type_num_from_dbgi_key_name(DI_Key *dbgi_key, String8 name);
 
 //- rjf: voff -> line info
 internal D_LineList d_lines_from_dbgi_key_voff(Arena *arena, DI_Key *dbgi_key, U64 voff);
@@ -436,7 +405,6 @@ internal B32 d_ctrl_targets_running(void);
 internal DI_KeyList d_push_active_dbgi_key_list(Arena *arena);
 
 //- rjf: per-run caches
-internal CTRL_Unwind d_query_cached_unwind_from_thread(CTRL_Entity *thread);
 internal U64 d_query_cached_rip_from_thread(CTRL_Entity *thread);
 internal U64 d_query_cached_rip_from_thread_unwind(CTRL_Entity *thread, U64 unwind_count);
 internal U64 d_query_cached_tls_base_vaddr_from_process_root_rip(CTRL_Entity *process, U64 root_vaddr, U64 rip_vaddr);

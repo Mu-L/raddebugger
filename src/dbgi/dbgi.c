@@ -279,10 +279,12 @@ di_scope_close(DI_Scope *scope)
     if(t->node != 0)
     {
       ins_atomic_u64_dec_eval(&t->node->touch_count);
+      os_condition_variable_broadcast(t->stripe->cv);
     }
     if(t->search_node != 0)
     {
       ins_atomic_u64_dec_eval(&t->search_node->scope_refcount);
+      os_condition_variable_broadcast(t->search_stripe->cv);
     }
     SLLStackPush(di_tctx->free_touch, t);
   }
@@ -290,7 +292,7 @@ di_scope_close(DI_Scope *scope)
 }
 
 internal void
-di_scope_touch_node__stripe_mutex_r_guarded(DI_Scope *scope, DI_Node *node)
+di_scope_touch_node__stripe_mutex_r_guarded(DI_Scope *scope, DI_Stripe *stripe, DI_Node *node)
 {
   if(node != 0)
   {
@@ -308,10 +310,11 @@ di_scope_touch_node__stripe_mutex_r_guarded(DI_Scope *scope, DI_Node *node)
   MemoryZeroStruct(touch);
   SLLQueuePush(scope->first_touch, scope->last_touch, touch);
   touch->node = node;
+  touch->stripe = stripe;
 }
 
 internal void
-di_scope_touch_search_node__stripe_mutex_r_guarded(DI_Scope *scope, DI_SearchNode *node)
+di_scope_touch_search_node__stripe_mutex_r_guarded(DI_Scope *scope, DI_SearchStripe *stripe, DI_SearchNode *node)
 {
   if(node != 0)
   {
@@ -329,6 +332,7 @@ di_scope_touch_search_node__stripe_mutex_r_guarded(DI_Scope *scope, DI_SearchNod
   MemoryZeroStruct(touch);
   SLLQueuePush(scope->first_touch, scope->last_touch, touch);
   touch->search_node = node;
+  touch->search_stripe = stripe;
 }
 
 ////////////////////////////////
@@ -527,6 +531,7 @@ di_close(DI_Key *key)
     DI_Slot *slot = &di_shared->slots[slot_idx];
     DI_Stripe *stripe = &di_shared->stripes[stripe_idx];
     log_infof("close_debug_info: {\"%S\", 0x%I64x}\n", key_normalized.path, key_normalized.min_timestamp);
+    B32 closed = 0;
     OS_MutexScopeW(stripe->rw_mutex)
     {
       //- rjf: find existing node
@@ -538,16 +543,8 @@ di_close(DI_Key *key)
         node->ref_count -= 1;
         if(node->ref_count == 0) for(;;)
         {
-          //- rjf: wait for touch count to go to 0
-          if(ins_atomic_u64_eval(&node->touch_count) != 0)
-          {
-            os_rw_mutex_drop_w(stripe->rw_mutex);
-            for(U64 start_t = os_now_microseconds(); os_now_microseconds() <= start_t + 250;);
-            os_rw_mutex_take_w(stripe->rw_mutex);
-          }
-          
           //- rjf: release
-          if(node->ref_count == 0 && ins_atomic_u64_eval(&node->touch_count) == 0)
+          if(ins_atomic_u64_eval(&node->touch_count) == 0)
           {
             di_string_release__stripe_mutex_w_guarded(stripe, node->key.path);
             if(node->file_base != 0)
@@ -570,6 +567,9 @@ di_close(DI_Key *key)
             SLLStackPush(stripe->free_node, node);
             break;
           }
+          
+          //- rjf: wait for touch count to go to 0
+          os_condition_variable_wait_rw_w(stripe->cv, stripe->rw_mutex, max_U64);
         }
       }
     }
@@ -615,7 +615,7 @@ di_rdi_from_key(DI_Scope *scope, DI_Key *key, U64 endt_us)
       //- rjf: parse done -> touch, grab result
       if(node != 0 && node->parse_done)
       {
-        di_scope_touch_node__stripe_mutex_r_guarded(scope, node);
+        di_scope_touch_node__stripe_mutex_r_guarded(scope, stripe, node);
         result = &node->rdi;
         break;
       }
@@ -709,7 +709,7 @@ di_search_items_from_key_params_query(DI_Scope *scope, U128 key, DI_SearchParams
       B32 results_stale = 1;
       if(node->bucket_read_gen != 0)
       {
-        di_scope_touch_search_node__stripe_mutex_r_guarded(scope, node);
+        di_scope_touch_search_node__stripe_mutex_r_guarded(scope, stripe, node);
         items = node->items;
         params_stale = (params_hash != node->buckets[node->bucket_read_gen%ArrayCount(node->buckets)].params_hash);
         query_stale = !str8_match(query, node->buckets[node->bucket_read_gen%ArrayCount(node->buckets)].query, 0);
@@ -1473,13 +1473,14 @@ di_search_thread__entry_point(void *p)
       quick_sort(items.v, items.count, sizeof(DI_SearchItem), di_qsort_compare_search_items);
     }
     
-    //- rjf: commit to cache - busyloop on scope touches
+    //- rjf: commit to cache - wait on scope touches
     if(arena != 0)
     {
-      for(B32 done = 0; !done;)
+      OS_MutexScopeW(stripe->rw_mutex) for(;;)
       {
         B32 found = 0;
-        OS_MutexScopeW(stripe->rw_mutex) for(DI_SearchNode *n = slot->first; n != 0; n = n->next)
+        B32 done = 0;
+        for(DI_SearchNode *n = slot->first; n != 0; n = n->next)
         {
           if(u128_match(n->key, key))
           {
@@ -1498,9 +1499,13 @@ di_search_thread__entry_point(void *p)
             break;
           }
         }
-        if(!found)
+        if((found && done) || !found)
         {
           break;
+        }
+        if(found && !done)
+        {
+          os_condition_variable_wait_rw_w(stripe->cv, stripe->rw_mutex, os_now_microseconds()+1000);
         }
       }
     }

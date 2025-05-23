@@ -378,10 +378,12 @@ d_trap_net_from_thread__step_over_line(Arena *arena, CTRL_Entity *thread)
   
   // rjf: line vaddr range => line's machine code
   String8 machine_code = {0};
+  B32 good_machine_code = 0;
   if(good_line_info)
   {
     CTRL_ProcessMemorySlice machine_code_slice = ctrl_process_memory_slice_from_vaddr_range(scratch.arena, process->handle, line_vaddr_rng, os_now_microseconds()+50000);
     machine_code = machine_code_slice.data;
+    good_machine_code = (machine_code.size == dim_1u64(line_vaddr_rng) && !machine_code_slice.any_byte_bad);
     LogInfoNamedBlockF("machine_code_slice")
     {
       log_infof("stale: %i\n", machine_code_slice.stale);
@@ -402,7 +404,7 @@ d_trap_net_from_thread__step_over_line(Arena *arena, CTRL_Entity *thread)
   
   // rjf: machine code => ctrl flow analysis
   DASM_CtrlFlowInfo ctrl_flow_info = {0};
-  if(good_line_info)
+  if(good_machine_code)
   {
     ctrl_flow_info = dasm_ctrl_flow_info_from_arch_vaddr_code(scratch.arena,
                                                               DASM_InstFlag_Call|
@@ -423,7 +425,7 @@ d_trap_net_from_thread__step_over_line(Arena *arena, CTRL_Entity *thread)
   }
   
   // rjf: push traps for all exit points
-  if(good_line_info) for(DASM_CtrlFlowPointNode *n = ctrl_flow_info.exit_points.first; n != 0; n = n->next)
+  if(good_machine_code) for(DASM_CtrlFlowPointNode *n = ctrl_flow_info.exit_points.first; n != 0; n = n->next)
   {
     DASM_CtrlFlowPoint *point = &n->v;
     CTRL_TrapFlags flags = 0;
@@ -534,15 +536,17 @@ d_trap_net_from_thread__step_into_line(Arena *arena, CTRL_Entity *thread)
   
   // rjf: line vaddr range => line's machine code
   String8 machine_code = {0};
+  B32 good_machine_code = 0;
   if(good_line_info)
   {
     CTRL_ProcessMemorySlice machine_code_slice = ctrl_process_memory_slice_from_vaddr_range(scratch.arena, process->handle, line_vaddr_rng, os_now_microseconds()+5000);
     machine_code = machine_code_slice.data;
+    good_machine_code = (machine_code.size == dim_1u64(line_vaddr_rng) && !machine_code_slice.any_byte_bad);
   }
   
   // rjf: machine code => ctrl flow analysis
   DASM_CtrlFlowInfo ctrl_flow_info = {0};
-  if(good_line_info)
+  if(good_machine_code)
   {
     ctrl_flow_info = dasm_ctrl_flow_info_from_arch_vaddr_code(scratch.arena,
                                                               DASM_InstFlag_Call|
@@ -555,13 +559,40 @@ d_trap_net_from_thread__step_into_line(Arena *arena, CTRL_Entity *thread)
                                                               machine_code);
   }
   
+  // rjf: determine last 
+  DASM_CtrlFlowPoint *last_call_point = 0;
+  if(good_machine_code) for(DASM_CtrlFlowPointNode *n = ctrl_flow_info.exit_points.first; n != 0; n = n->next)
+  {
+    if(n->v.inst_flags & DASM_InstFlag_Call)
+    {
+      last_call_point = &n->v;
+    }
+  }
+  
   // rjf: push traps for all exit points
-  if(good_line_info) for(DASM_CtrlFlowPointNode *n = ctrl_flow_info.exit_points.first; n != 0; n = n->next)
+  if(good_machine_code) for(DASM_CtrlFlowPointNode *n = ctrl_flow_info.exit_points.first; n != 0; n = n->next)
   {
     DASM_CtrlFlowPoint *point = &n->v;
     CTRL_TrapFlags flags = 0;
     B32 add = 1;
     U64 trap_addr = point->vaddr;
+    
+    // rjf: if this is not the last call instruction in the control flow,
+    // and if we have no line info for this address, then do not add.
+    if(point != last_call_point &&
+       point->inst_flags & DASM_InstFlag_Call &&
+       point->jump_dest_vaddr != 0)
+    {
+      U64 jump_dest_vaddr = point->jump_dest_vaddr;
+      CTRL_Entity *jump_dest_module = ctrl_module_from_process_vaddr(process, jump_dest_vaddr);
+      U64 jump_dest_voff = ctrl_voff_from_vaddr(jump_dest_module, jump_dest_vaddr);
+      DI_Key jump_dest_dbgi_key = ctrl_dbgi_key_from_module(jump_dest_module);
+      D_LineList lines = d_lines_from_dbgi_key_voff(scratch.arena, &jump_dest_dbgi_key, jump_dest_voff);
+      if(lines.count == 0)
+      {
+        add = 0;
+      }
+    }
     
     // rjf: branches/jumps/returns => single-step & end, OR trap @ destination.
     if(point->inst_flags & (DASM_InstFlag_Call|
@@ -692,45 +723,6 @@ d_voff_from_dbgi_key_symbol_name(DI_Key *dbgi_key, String8 symbol_name)
   }
   di_scope_close(scope);
   scratch_end(scratch);
-  ProfEnd();
-  return result;
-}
-
-internal U64
-d_type_num_from_dbgi_key_name(DI_Key *dbgi_key, String8 name)
-{
-  ProfBeginFunction();
-  DI_Scope *scope = di_scope_open();
-  U64 result = 0;
-  {
-    RDI_Parsed *rdi = di_rdi_from_key(scope, dbgi_key, 0);
-    RDI_NameMap *name_map = rdi_element_from_name_idx(rdi, NameMaps, RDI_NameMapKind_Types);
-    RDI_ParsedNameMap parsed_name_map = {0};
-    rdi_parsed_from_name_map(rdi, name_map, &parsed_name_map);
-    RDI_NameMapNode *node = rdi_name_map_lookup(rdi, &parsed_name_map, name.str, name.size);
-    U64 entity_num = 0;
-    if(node != 0)
-    {
-      switch(node->match_count)
-      {
-        case 1:
-        {
-          entity_num = node->match_idx_or_idx_run_first + 1;
-        }break;
-        default:
-        {
-          U32 num = 0;
-          U32 *run = rdi_matches_from_map_node(rdi, node, &num);
-          if(num != 0)
-          {
-            entity_num = run[0]+1;
-          }
-        }break;
-      }
-    }
-    result = entity_num;
-  }
-  di_scope_close(scope);
   ProfEnd();
   return result;
 }
@@ -1199,61 +1191,6 @@ d_push_active_dbgi_key_list(Arena *arena)
 
 //- rjf: per-run caches
 
-internal CTRL_Unwind
-d_query_cached_unwind_from_thread(CTRL_Entity *thread)
-{
-  Temp scratch = scratch_begin(0, 0);
-  CTRL_Unwind result = {0};
-  if(thread->kind == CTRL_EntityKind_Thread)
-  {
-    U64 reg_gen = ctrl_reg_gen();
-    U64 mem_gen = ctrl_mem_gen();
-    D_UnwindCache *cache = &d_state->unwind_cache;
-    CTRL_Handle handle = thread->handle;
-    U64 hash = d_hash_from_string(str8_struct(&handle));
-    U64 slot_idx = hash%cache->slots_count;
-    D_UnwindCacheSlot *slot = &cache->slots[slot_idx];
-    D_UnwindCacheNode *node = 0;
-    for(D_UnwindCacheNode *n = slot->first; n != 0; n = n->next)
-    {
-      if(ctrl_handle_match(handle, n->thread))
-      {
-        node = n;
-        break;
-      }
-    }
-    if(node == 0)
-    {
-      node = cache->free_node;
-      if(node != 0)
-      {
-        SLLStackPop(cache->free_node);
-      }
-      else
-      {
-        node = push_array_no_zero(d_state->arena, D_UnwindCacheNode, 1);
-      }
-      MemoryZeroStruct(node);
-      DLLPushBack(slot->first, slot->last, node);
-      node->arena = arena_alloc();
-      node->thread = handle;
-    }
-    if(!d_state->ctrl_is_running && (node->reggen != reg_gen || node->memgen != mem_gen))
-    {
-      CTRL_Unwind new_unwind = ctrl_unwind_from_thread(scratch.arena, &d_state->ctrl_entity_store->ctx, thread->handle, os_now_microseconds()+100);
-      if(!(new_unwind.flags & (CTRL_UnwindFlag_Error|CTRL_UnwindFlag_Stale)) && new_unwind.frames.count != 0)
-      {
-        node->unwind = ctrl_unwind_deep_copy(node->arena, thread->arch, &new_unwind);
-        node->reggen = reg_gen;
-        node->memgen = mem_gen;
-      }
-    }
-    result = node->unwind;
-  }
-  scratch_end(scratch);
-  return result;
-}
-
 internal U64
 d_query_cached_rip_from_thread(CTRL_Entity *thread)
 {
@@ -1271,11 +1208,13 @@ d_query_cached_rip_from_thread_unwind(CTRL_Entity *thread, U64 unwind_count)
   }
   else
   {
-    CTRL_Unwind unwind = d_query_cached_unwind_from_thread(thread);
-    if(unwind.frames.count != 0)
+    CTRL_Scope *ctrl_scope = ctrl_scope_open();
+    CTRL_CallStack callstack = ctrl_call_stack_from_thread(ctrl_scope, &d_state->ctrl_entity_store->ctx, thread, 1, 0);
+    if(callstack.concrete_frames_count != 0)
     {
-      result = regs_rip_from_arch_block(thread->arch, unwind.frames.v[unwind_count%unwind.frames.count].regs);
+      result = regs_rip_from_arch_block(thread->arch, callstack.concrete_frames[unwind_count%callstack.concrete_frames_count]->regs);
     }
+    ctrl_scope_close(ctrl_scope);
   }
   return result;
 }
@@ -1482,15 +1421,13 @@ d_init(void)
   d_state = push_array(arena, D_State, 1);
   d_state->arena = arena;
   d_state->cmds_arena = arena_alloc();
-  d_state->output_log_key = hs_hash_from_data(str8_lit("output_log_key"));
+  d_state->output_log_key = hs_key_make(hs_root_alloc(), hs_id_make(0, 0));
   hs_submit_data(d_state->output_log_key, 0, str8_zero());
   d_state->ctrl_entity_store = ctrl_entity_ctx_rw_store_alloc();
   d_state->ctrl_stop_arena = arena_alloc();
   d_state->ctrl_msg_arena = arena_alloc();
   
   // rjf: set up caches
-  d_state->unwind_cache.slots_count = 1024;
-  d_state->unwind_cache.slots = push_array(arena, D_UnwindCacheSlot, d_state->unwind_cache.slots_count);
   for(U64 idx = 0; idx < ArrayCount(d_state->tls_base_caches); idx += 1)
   {
     d_state->tls_base_caches[idx].arena = arena_alloc();
@@ -1735,24 +1672,6 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
   }
   
   //////////////////////////////
-  //- rjf: garbage collect eliminated thread unwinds
-  //
-  for(U64 slot_idx = 0; slot_idx < d_state->unwind_cache.slots_count; slot_idx += 1)
-  {
-    D_UnwindCacheSlot *slot = &d_state->unwind_cache.slots[slot_idx];
-    for(D_UnwindCacheNode *n = slot->first, *next = 0; n != 0; n = next)
-    {
-      next = n->next;
-      if(ctrl_entity_from_handle(&d_state->ctrl_entity_store->ctx, n->thread) == &ctrl_entity_nil)
-      {
-        DLLRemove(slot->first, slot->last, n);
-        arena_release(n->arena);
-        SLLStackPush(d_state->unwind_cache.free_node, n);
-      }
-    }
-  }
-  
-  //////////////////////////////
   //- rjf: process top-level commands
   //
   CTRL_MsgList ctrl_msgs = {0};
@@ -1967,13 +1886,15 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
               case D_CmdKind_StepOverLine: {traps = d_trap_net_from_thread__step_over_line(scratch.arena, thread);}break;
               case D_CmdKind_StepOut:
               {
-                // rjf: thread => full unwind
-                CTRL_Unwind unwind = ctrl_unwind_from_thread(scratch.arena, &d_state->ctrl_entity_store->ctx, thread->handle, os_now_microseconds()+10000);
+                CTRL_Scope *ctrl_scope = ctrl_scope_open();
+                
+                // rjf: thread => call stack
+                CTRL_CallStack callstack = ctrl_call_stack_from_thread(ctrl_scope, &d_state->ctrl_entity_store->ctx, thread, 1, os_now_microseconds()+10000);
                 
                 // rjf: use first unwind frame to generate trap
-                if(unwind.flags == 0 && unwind.frames.count > 1)
+                if(callstack.concrete_frames_count > 1)
                 {
-                  U64 vaddr = regs_rip_from_arch_block(thread->arch, unwind.frames.v[1].regs);
+                  U64 vaddr = regs_rip_from_arch_block(thread->arch, callstack.concrete_frames[1]->regs);
                   CTRL_Trap trap = {CTRL_TrapFlag_EndStepping|CTRL_TrapFlag_IgnoreStackPointerCheck, vaddr};
                   ctrl_trap_list_push(scratch.arena, &traps, &trap);
                 }
@@ -1982,6 +1903,8 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
                   log_user_error(str8_lit("Could not find the return address of the current callstack frame successfully."));
                   good = 0;
                 }
+                
+                ctrl_scope_close(ctrl_scope);
               }break;
             }
             if(good && traps.count != 0)
@@ -2023,27 +1946,7 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
           void *block = ctrl_reg_block_from_thread(scratch.arena, &d_state->ctrl_entity_store->ctx, thread->handle);
           regs_arch_block_write_rip(thread->arch, block, vaddr);
           B32 result = ctrl_thread_write_reg_block(thread->handle, block);
-          
-          // rjf: early mutation of unwind cache for immediate frontend effect
-          if(result)
-          {
-            D_UnwindCache *cache = &d_state->unwind_cache;
-            if(cache->slots_count != 0)
-            {
-              CTRL_Handle thread_handle = thread->handle;
-              U64 hash = d_hash_from_string(str8_struct(&thread_handle));
-              U64 slot_idx = hash%cache->slots_count;
-              D_UnwindCacheSlot *slot = &cache->slots[slot_idx];
-              for(D_UnwindCacheNode *n = slot->first; n != 0; n = n->next)
-              {
-                if(ctrl_handle_match(n->thread, thread_handle) && n->unwind.frames.count != 0)
-                {
-                  regs_arch_block_write_rip(thread->arch, n->unwind.frames.v[0].regs, vaddr);
-                  break;
-                }
-              }
-            }
-          }
+          (void)result;
         }break;
         
         //- rjf: high-level composite target control operations
